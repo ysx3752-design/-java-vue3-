@@ -13,7 +13,9 @@
 """
 import argparse
 import math
+import signal
 import socket
+import sys
 import threading
 import time
 
@@ -135,10 +137,48 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((args.host, args.port))
     srv.listen(5)
-    log("模拟器监听 %s:%d（替代 KPC）" % (args.host, args.port))
-    while True:
-        conn, peer = srv.accept()
-        threading.Thread(target=handle_client, args=(conn, peer), daemon=True).start()
+    srv.settimeout(0.5)
+    log("模拟器监听 %s:%d（替代 KPC，支持随时 Ctrl+C 退出）" % (args.host, args.port))
+
+    is_running = True
+
+    def shutdown(signum=None, frame=None):
+        nonlocal is_running
+        if not is_running:
+            return
+        is_running = False
+        log("收到中断信号，模拟器服务已安全停止。")
+        try:
+            srv.close()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, shutdown)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, shutdown)
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, shutdown)
+    except Exception:
+        pass
+
+    try:
+        while is_running:
+            try:
+                conn, peer = srv.accept()
+            except socket.timeout:
+                continue
+            except (OSError, ValueError):
+                break
+            threading.Thread(target=handle_client, args=(conn, peer), daemon=True).start()
+    except (KeyboardInterrupt, SystemExit):
+        shutdown()
+    finally:
+        try:
+            srv.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
