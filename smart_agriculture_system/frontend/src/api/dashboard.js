@@ -51,13 +51,9 @@ export function getTempHumidityTrend() {
     // 处理数据，按时间间隔分组
     const data = ensureArray(response);
     
-    // 如果没有数据，返回默认数据
+    // 如果没有数据，返回空曲线，不生成模拟数据
     if (data.length === 0) {
-      return {
-        times: ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'],
-        temperatures: [23, 24, 25, 26, 27, 28, 26, 25],
-        humidities: [60, 62, 65, 63, 58, 55, 58, 62]
-      }
+      return { times: [], temperatures: [], humidities: [] }
     }
     
     // 将24小时数据分为8个时间点
@@ -107,13 +103,9 @@ export function getTempHumidityTrend() {
     return { times, temperatures, humidities }
   }).catch(error => {
     console.error('获取温湿度趋势数据失败:', error)
-    
-    // 返回默认数据
-    return {
-      times: ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'],
-      temperatures: [23, 24, 25, 26, 27, 28, 26, 25],
-      humidities: [60, 62, 65, 63, 58, 55, 58, 62]
-    }
+
+    // 失败时返回空曲线，不生成模拟数据
+    return { times: [], temperatures: [], humidities: [] }
   })
 }
 
@@ -129,17 +121,9 @@ export function getAlerts(limit = 5) {
     return ensureArray(response);
   }).catch(error => {
     console.error('获取警报数据失败:', error)
-    
-    // 返回模拟数据
-    return [
-      {
-        id: 1,
-        time: new Date().toISOString(),
-        type: '温度异常',
-        description: '温室1号温度过高',
-        status: '未处理'
-      }
-    ]
+
+    // 失败时返回空列表，不生成模拟数据
+    return []
   })
 }
 

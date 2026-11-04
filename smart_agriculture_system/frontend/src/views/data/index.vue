@@ -142,30 +142,6 @@ const checkDomElements = () => {
   return elements.every(el => el && el.clientWidth > 0 && el.clientHeight > 0)
 }
 
-// 生成测试数据
-const generateTestData = () => {
-  const now = new Date()
-  const data = []
-  
-  // 生成过去24小时的数据点，每小时一个
-  for (let i = 0; i < 24; i++) {
-    const timestamp = new Date(now.getTime() - (i * 3600 * 1000))
-    
-    data.push({
-      id: i + 1,
-      timestamp: timestamp.toISOString(),
-      air_temperature: 20 + Math.random() * 10, // 20-30℃
-      air_humidity: 40 + Math.random() * 30,    // 40-70%
-      soil_temperature: 18 + Math.random() * 5, // 18-23℃
-      soil_moisture: 50 + Math.random() * 30,   // 50-80%
-      light_intensity: i < 12 ? 2000 + Math.random() * 6000 : 200 + Math.random() * 500, // 白天和夜间光照不同
-      co2_concentration: 400 + Math.random() * 200 // 400-600ppm
-    })
-  }
-  
-  return data
-}
-
 // 优化数据获取逻辑
 const fetchData = async () => {
   // 如果已经在加载，则不再重复请求
@@ -212,10 +188,8 @@ const fetchData = async () => {
         successMethod = 'direct axios'
         
       } catch (directError) {
-        console.error('直接请求也失败，使用测试数据:', directError)
-        // 使用测试数据
-        response = generateTestData()
-        successMethod = 'test data'
+        console.error('直接请求也失败:', directError)
+        throw directError
       }
     }
     
@@ -264,38 +238,16 @@ const fetchData = async () => {
         ElMessage.success(`成功加载 ${data.length} 条数据`)
       }, 200)
     } else {
-      // 如果没有数据，使用测试数据
-      const testData = generateTestData()
-      chartData.value = testData
-      
-      // 重新初始化图表
-      await nextTick()
-      initSimpleCharts()
-      
-      setTimeout(() => {
-        updateCharts(testData)
-        ElMessage.info('没有历史数据，显示测试数据')
-      }, 200)
-      
+      // 无真实数据时不生成模拟数据，仅提示
+      chartData.value = []
       dataLoaded.value = true
+      ElMessage.info('该时间范围内暂无历史数据')
     }
   } catch (error) {
-    console.error('获取数据失败，使用测试数据:', error)
-    
-    // 使用测试数据
-    const testData = generateTestData()
-    chartData.value = testData
+    console.error('获取历史数据失败:', error)
+    chartData.value = []
     dataLoaded.value = true
-    
-    // 重新初始化图表
-    await nextTick()
-    initSimpleCharts()
-    
-    setTimeout(() => {
-      updateCharts(testData)
-      ElMessage.info('获取数据失败，显示测试数据')
-    }, 200)
-    
+    ElMessage.error('获取历史数据失败，请检查后端服务与硬件连接')
   } finally {
     loading.value = false
   }
