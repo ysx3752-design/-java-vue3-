@@ -95,15 +95,15 @@ onMounted(() => {
       transition: all 0.3s;
       
       &:hover {
-        color: #10b981;
+        color: #409EFF;
         transform: translateY(-2px);
         text-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
       }
       
       &.last-item {
-        color: #10b981;
+        color: #409EFF;
         font-weight: 600;
-        text-shadow: 0 1px 4px rgba(16, 185, 129, 0.2);
+        text-shadow: 0 1px 4px rgba(64, 158, 255, 0.2);
       }
       
       .breadcrumb-icon {

@@ -11,9 +11,9 @@
         class="el-menu-vertical"
         :router="true"
         :collapse="isCollapse"
-        background-color="#0f392b"
-        text-color="#cbe5dc"
-        active-text-color="#34d399">
+        background-color="#304156"
+        text-color="#bfcbd9"
+        active-text-color="#409EFF">
         <el-menu-item index="/dashboard" class="menu-item">
           <el-icon class="menu-icon"><Monitor /></el-icon>
           <span>控制面板</span>
@@ -197,7 +197,7 @@ onMounted(() => {
       display: flex;
       align-items: center;
       padding: 0 16px;
-      background-color: #0a291f;
+      background-color: #2b3649;
       overflow: hidden;
 
       .logo-image {
@@ -244,7 +244,7 @@ onMounted(() => {
         top: 0;
         height: 100%;
         width: 4px;
-        background-color: #10b981;
+        background-color: #409EFF;
         transform: scaleY(0);
         transition: transform 0.3s;
       }
@@ -252,7 +252,7 @@ onMounted(() => {
       &:hover, &.is-active {
         .menu-icon {
           transform: translateZ(0);
-          filter: drop-shadow(0 2px 8px rgba(16, 185, 129, 0.5));
+          filter: drop-shadow(0 2px 8px rgba(64, 158, 255, 0.5));
         }
       }
       
@@ -320,7 +320,7 @@ onMounted(() => {
             }
             
             span {
-              color: #10b981;
+              color: #409EFF;
             }
           }
         }
@@ -328,7 +328,7 @@ onMounted(() => {
     }
 
     .content-container {
-      background-color: #f4f8f5;
+      background-color: #f0f2f5;
       padding: 20px;
       overflow: auto;
       position: relative;

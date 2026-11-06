@@ -260,7 +260,7 @@ const refreshTempChart = async () => {
               shadowBlur: 10
             },
             itemStyle: {
-              color: '#10b981'
+              color: '#409EFF'
             },
             areaStyle: {
               color: {
@@ -270,8 +270,8 @@ const refreshTempChart = async () => {
                 x2: 0,
                 y2: 1,
                 colorStops: [
-                  { offset: 0, color: 'rgba(16, 185, 129, 0.4)' },
-                  { offset: 1, color: 'rgba(16, 185, 129, 0.05)' }
+                  { offset: 0, color: 'rgba(64, 158, 255, 0.5)' },
+                  { offset: 1, color: 'rgba(64, 158, 255, 0.1)' }
                 ]
               }
             }
@@ -389,7 +389,7 @@ const loadDashboardData = async () => {
                   shadowBlur: 10
                 },
                 itemStyle: {
-                  color: '#10b981'
+                  color: '#409EFF'
                 },
                 areaStyle: {
                   color: {
@@ -399,8 +399,8 @@ const loadDashboardData = async () => {
                     x2: 0,
                     y2: 1,
                     colorStops: [
-                      { offset: 0, color: 'rgba(16, 185, 129, 0.4)' },
-                      { offset: 1, color: 'rgba(16, 185, 129, 0.05)' }
+                      { offset: 0, color: 'rgba(64, 158, 255, 0.5)' },
+                      { offset: 1, color: 'rgba(64, 158, 255, 0.1)' }
                     ]
                   }
                 }
@@ -574,7 +574,7 @@ const tempHumidityChartOption = ref({
         shadowBlur: 10
       },
       itemStyle: {
-        color: '#10b981'
+        color: '#409EFF'
       },
       areaStyle: {
         color: {
@@ -584,8 +584,8 @@ const tempHumidityChartOption = ref({
           x2: 0,
           y2: 1,
           colorStops: [
-            { offset: 0, color: 'rgba(16, 185, 129, 0.4)' },
-            { offset: 1, color: 'rgba(16, 185, 129, 0.05)' }
+            { offset: 0, color: 'rgba(64, 158, 255, 0.5)' },
+            { offset: 1, color: 'rgba(64, 158, 255, 0.1)' }
           ]
         }
       }
@@ -697,7 +697,7 @@ const deviceStatusChartOption = computed(() => ({
       .card-icon {
         margin-right: 8px;
         font-size: 20px;
-        color: #10b981;
+        color: #409EFF;
         filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.15));
         transition: all 0.3s;
       }
@@ -797,7 +797,7 @@ const deviceStatusChartOption = computed(() => ({
         }
         
         &.humidity-alert {
-          color: #10b981;
+          color: #409EFF;
         }
         
         &.offline-alert {

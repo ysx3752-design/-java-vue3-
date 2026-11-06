@@ -404,7 +404,7 @@ const handleRegister = async () => {
   position: relative;
   
   &.active {
-    color: #10b981;
+    color: #409eff;
     font-weight: 500;
     
     &:after {
@@ -415,12 +415,12 @@ const handleRegister = async () => {
       transform: translateX(-50%);
       width: 50%;
       height: 2px;
-      background-color: #10b981;
+      background-color: #409eff;
     }
   }
   
   &:hover {
-    color: #10b981;
+    color: #409eff;
   }
 }
 
@@ -455,7 +455,7 @@ const handleRegister = async () => {
 
     &:focus {
       outline: none;
-      border-color: #10b981;
+      border-color: #409eff;
     }
 
     &::placeholder {
@@ -499,7 +499,7 @@ const handleRegister = async () => {
 .login-button {
   width: 100%;
   height: 40px;
-  background-color: #10b981;
+  background-color: #409eff;
   border: none;
   border-radius: 4px;
   color: white;
@@ -508,11 +508,11 @@ const handleRegister = async () => {
   transition: background-color 0.3s;
 
   &:hover {
-    background-color: #059669;
+    background-color: #66b1ff;
   }
 
   &:disabled {
-    background-color: #a7f3d0;
+    background-color: #a0cfff;
     cursor: not-allowed;
   }
 }
