@@ -58,17 +58,24 @@ public class BackgroundTasks {
         retryThread.start();
     }
 
+    /**
+     * 设备始终不可用时持续重连（每 30 秒一次，不放弃）：
+     * 仿真平台经常是后启动的，取消重试上限后，平台一旦开启即可自动接上。
+     */
     private void retryConnect() {
-        for (int attempt = 1; attempt <= 10; attempt++) {
+        int attempt = 0;
+        while (true) {
             sleep(30_000);
-            log.info("尝试重新连接设备 ({}/10)", attempt);
+            attempt++;
             if (deviceManager.connect()) {
-                log.info("设备重连成功");
+                log.info("设备重连成功（第 {} 次尝试）", attempt);
                 startWatchdog();
                 return;
             }
+            if (attempt <= 10 || attempt % 10 == 0) {
+                log.warn("设备重连失败，{} 秒后继续尝试（第 {} 次）", 30, attempt);
+            }
         }
-        log.error("设备重连失败，请检查设备电源和网络连接");
     }
 
     private void startWatchdog() {
@@ -100,6 +107,11 @@ public class BackgroundTasks {
                     log.warn("未获取到传感器数据，跳过本次采集");
                     continue;
                 }
+                if (isPlaceholderReading(sensorData)) {
+                    // 网关未连接时读到的是全 0 占位值，入库会污染历史曲线并触发假告警
+                    log.warn("传感器读数为占位值(全 0)，跳过本次采集");
+                    continue;
+                }
                 SensorData record = SensorData.of(sensorData, LocalDateTime.now());
                 sensorDataRepository.insert(record);
                 log.info("已保存传感器数据: 温度={}°C, 湿度={}%",
@@ -112,8 +124,19 @@ public class BackgroundTasks {
         }
     }
 
-    private static void sleep(long millis) {
-        try {
+    /**
+     * 判断是否为“未读到真实数据”的占位值：温度与湿度同时为 0（网关离线时的默认填充）。
+     */
+    private static boolean isPlaceholderReading(Map<String, Double> data) {
+        Double temperature = data.get("air_temperature");
+        Double humidity = data.get("air_humidity");
+        if (temperature == null || humidity == null) {
+            return true;
+        }
+        return temperature == 0.0 && humidity == 0.0;
+    }
+
+    private static void sleep(long millis) {        try {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

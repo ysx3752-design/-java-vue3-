@@ -96,7 +96,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, reactive, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, reactive, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import VChart from 'vue-echarts'
@@ -133,52 +133,35 @@ const router = useRouter()
 // 获取需要的图标组件
 const { Sunrise, Cloudy, Bell, Monitor, Refresh, Warning, InfoFilled, CircleClose } = ElementPlusIconsVue
 
-// 实时数据
-const temperature = ref(25.6)
-const temperatureTrend = ref(2.1)
-const humidity = ref(65)
-const humidityTrend = ref(-1.5)
-const alertCount = ref(3)
-const alertTrend = ref(50)
-const onlineDevices = ref(8)
-const totalDevices = ref(10)
+// 实时数据（初始保持空值，接口返回后再填充，避免接口失败时展示伪造数值）
+const temperature = ref(null)
+const temperatureTrend = ref(undefined)
+const humidity = ref(null)
+const humidityTrend = ref(undefined)
+const alertCount = ref(0)
+const alertTrend = ref(undefined)
+const onlineDevices = ref(0)
+const totalDevices = ref(0)
 const loading = ref(false)
 const chartLoading = ref(false)
 const tableLoading = ref(false)
 
 // 最近警报数组
-const recentAlerts = ref([
-  {
-    time: '2024-01-20 10:30:00',
-    type: '温度异常',
-    description: '温室1号温度过高',
-    status: '已处理'
-  },
-  {
-    time: '2024-01-20 09:15:00',
-    type: '湿度异常',
-    description: '温室2号湿度过高',
-    status: '处理中'
-  },
-  {
-    time: '2024-01-20 08:45:00',
-    type: '设备离线',
-    description: '灌溉系统离线',
-    status: '未处理'
-  }
-])
+const recentAlerts = ref([])
 
 // 数据卡片配置，使用响应式数据
+const formatMetric = (value, unit) => (value === null || value === undefined ? '--' : `${value}${unit}`)
+
 const dataCards = computed(() => [
   {
     title: '平均温度',
-    value: `${temperature.value}°C`,
+    value: formatMetric(temperature.value, '°C'),
     trend: temperatureTrend.value,
     icon: 'Sunrise'
   },
   {
     title: '平均湿度',
-    value: `${humidity.value}%`,
+    value: formatMetric(humidity.value, '%'),
     trend: humidityTrend.value,
     icon: 'Cloudy'
   },
@@ -305,23 +288,26 @@ const loadDashboardData = async () => {
       try {
         const dashboardData = await getDashboardData()
         
-        // 更新传感器数据（接口返回 { data: {...}, source, timestamp }，字段在 data 里）
-        if (dashboardData.sensorData && !dashboardData.error) {
-          const sensor = dashboardData.sensorData.data || dashboardData.sensorData
+        // 更新传感器数据（响应可能是对象、{data:{...}} 或单元素数组，统一归一化）
+        if (dashboardData.sensorData) {
+          const rawSensor = Array.isArray(dashboardData.sensorData)
+            ? dashboardData.sensorData[0]
+            : dashboardData.sensorData
+          const sensor = rawSensor?.data || rawSensor || {}
           const tempValue = Number(sensor.air_temperature ?? sensor.temperature)
           const humidityValue = Number(sensor.air_humidity ?? sensor.humidity)
-          if (!Number.isNaN(tempValue)) {
+          if (Number.isFinite(tempValue)) {
             temperature.value = tempValue.toFixed(1)
           }
-          if (!Number.isNaN(humidityValue)) {
+          if (Number.isFinite(humidityValue)) {
             humidity.value = humidityValue.toFixed(0)
           }
         }
-        
-        // 更新设备状态
+
+        // 更新设备状态（取不到就显示 0，不用假数据兜底）
         if (dashboardData.connectionStatus) {
-          totalDevices.value = dashboardData.connectionStatus.totalDevices || 10
-          onlineDevices.value = dashboardData.connectionStatus.connectedDevices || 8
+          totalDevices.value = dashboardData.connectionStatus.totalDevices ?? 0
+          onlineDevices.value = dashboardData.connectionStatus.connectedDevices ?? 0
         }
         
         // 更新警报数据
@@ -419,8 +405,14 @@ const loadDashboardData = async () => {
           if (trendData.temperatures && trendData.temperatures.length > 1) {
             const lastIndex = trendData.temperatures.length - 1
             const prevIndex = lastIndex - 1
-            temperatureTrend.value = ((trendData.temperatures[lastIndex] - trendData.temperatures[prevIndex]) / trendData.temperatures[prevIndex] * 100).toFixed(1)
-            humidityTrend.value = ((trendData.humidities[lastIndex] - trendData.humidities[prevIndex]) / trendData.humidities[prevIndex] * 100).toFixed(1)
+            const calcTrend = (series) => {
+              const prev = Number(series?.[prevIndex])
+              const last = Number(series?.[lastIndex])
+              if (!Number.isFinite(prev) || !Number.isFinite(last) || prev === 0) return undefined
+              return ((last - prev) / prev * 100).toFixed(1)
+            }
+            temperatureTrend.value = calcTrend(trendData.temperatures)
+            humidityTrend.value = calcTrend(trendData.humidities)
           }
         }
       } catch (error) {
@@ -437,19 +429,25 @@ const loadDashboardData = async () => {
 }
 
 // 页面加载时获取数据
+let refreshInterval = null
+
 onMounted(() => {
   // 使用nextTick确保DOM已完全渲染
   nextTick(() => {
     loadDashboardData()
-    
-    // 设置定时刷新，每10秒刷新一次
-    const refreshInterval = setInterval(() => {
+    // 设置定时刷新，每30秒刷新一次
+    refreshInterval = setInterval(() => {
       loadDashboardData()
-    }, 10000)
-    
-    // 组件卸载时清除定时器
-    return () => clearInterval(refreshInterval)
+    }, 30000)
   })
+})
+
+// 组件卸载时清除定时器，避免重复轮询
+onUnmounted(() => {
+  if (refreshInterval) {
+    clearInterval(refreshInterval)
+    refreshInterval = null
+  }
 })
 
 // 获取警报状态对应的标签类型
@@ -643,10 +641,12 @@ const deviceStatusChartOption = computed(() => ({
       labelLine: {
         show: false
       },
-      data: [
-        { value: onlineDevices.value, name: '在线', itemStyle: { color: '#67C23A' } },
-        { value: totalDevices.value - onlineDevices.value, name: '离线', itemStyle: { color: '#909399' } }
-      ]
+      data: totalDevices.value > 0
+        ? [
+            { value: onlineDevices.value, name: '在线', itemStyle: { color: '#67C23A' } },
+            { value: Math.max(totalDevices.value - onlineDevices.value, 0), name: '离线', itemStyle: { color: '#909399' } }
+          ]
+        : [{ value: 1, name: '暂无设备数据', itemStyle: { color: '#dcdfe6' } }]
     }
   ]
 }))

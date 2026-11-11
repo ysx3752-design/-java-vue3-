@@ -193,8 +193,8 @@ public class DeviceController {
             String connectionError = null;
             try {
                 if (!deviceManager.getWsnClient().isConnected()) {
-                    log.info("设备未连接，尝试连接...");
-                    deviceManager.connect();
+                    // 同上：后台尝试连接，本次请求直接走数据库缓存，不阻塞
+                    deviceManager.requestConnectAsync();
                 }
                 if (deviceManager.getWsnClient().isConnected()) {
                     realtimeData = deviceManager.getSensorData();
@@ -304,12 +304,9 @@ public class DeviceController {
     public ResponseEntity<Map<String, Object>> getConnectionStatus() {
         try {
             if (!deviceManager.getWsnClient().isConnected()) {
-                try {
-                    log.info("设备未连接，尝试连接...");
-                    deviceManager.connect();
-                } catch (Exception e) {
-                    log.error("尝试连接设备失败: {}", e.getMessage());
-                }
+                // 非阻塞：只登记一次后台连接，立即按当前（未连接）状态返回，
+                // 避免网关不可达时页面轮询被 10 秒级 TCP 超时拖死
+                deviceManager.requestConnectAsync();
             }
             boolean isConnected = deviceManager.getWsnClient().isConnected();
             int totalDevices = deviceManager.getDeviceStatus().size();
@@ -319,6 +316,7 @@ public class DeviceController {
                     "status", isConnected ? "connected" : "disconnected",
                     "message", isConnected ? "已连接" : "未连接",
                     "connected", isConnected,
+                    "connecting", deviceManager.isConnecting(),
                     "last_connection", deviceManager.getWsnClient().getLastConnectionTime(),
                     "last_communication", deviceManager.getWsnClient().getLastCommunicationTime(),
                     "total_devices", totalDevices,

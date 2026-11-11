@@ -50,7 +50,7 @@ public class AlertController {
     public ResponseEntity<?> recent(@RequestParam(name = "limit", defaultValue = "5") int limit) {
         try {
             List<Map<String, Object>> alerts = new ArrayList<>();
-            operationLogRepository.findRecent(limit).forEach(operationLog -> {
+            operationLogRepository.findRecentAlerts(limit).forEach(operationLog -> {
                 String type = operationLog.operation_type != null ? operationLog.operation_type : "";
                 boolean unhandled = type.toLowerCase().contains("error")
                         || operationLog.operation_result == null
@@ -91,7 +91,7 @@ public class AlertController {
     @GetMapping("/count")
     public ResponseEntity<Map<String, Object>> count() {
         try {
-            return ResponseEntity.ok(Maps.of("count", operationLogRepository.countUnhandled()));
+            return ResponseEntity.ok(Maps.of("count", operationLogRepository.countUnhandledAlerts()));
         } catch (Exception e) {
             log.error("获取警报数量失败: {}", e.getMessage());
             return ResponseEntity.status(500).body(Maps.of("error", e.getMessage()));

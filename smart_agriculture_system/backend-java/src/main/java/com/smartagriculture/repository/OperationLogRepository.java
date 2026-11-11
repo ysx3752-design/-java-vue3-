@@ -33,8 +33,21 @@ public class OperationLogRepository {
         this.jdbc = jdbc;
     }
 
+    /**
+     * 真正的警报记录：operation_logs 里同时存了手动开关设备和自动控制的流水，
+     * 这些属于操作记录而非警报，展示警报时必须排除，否则点一次开关就多一条"警报"。
+     */
+    private static final String ALERT_FILTER =
+            "(operation_type LIKE '%警报%' OR operation_type LIKE '%告警%' OR operation_type LIKE '%alert%')";
+
     public List<OperationLog> findRecent(int limit) {
         return jdbc.query("SELECT * FROM operation_logs ORDER BY operation_time DESC LIMIT ?", MAPPER, limit);
+    }
+
+    /** 最近的真实警报（排除设备开关、自动控制等操作流水）。 */
+    public List<OperationLog> findRecentAlerts(int limit) {
+        return jdbc.query("SELECT * FROM operation_logs WHERE " + ALERT_FILTER
+                + " ORDER BY operation_time DESC LIMIT ?", MAPPER, limit);
     }
 
     public List<OperationLog> findAutoControl(int limit) {
@@ -44,6 +57,13 @@ public class OperationLogRepository {
 
     public long countUnhandled() {
         Long count = jdbc.queryForObject("SELECT COUNT(*) FROM operation_logs WHERE operation_result = 0", Long.class);
+        return count != null ? count : 0;
+    }
+
+    /** 未处理的警报数量（只统计真实警报，不含设备开关流水）。 */
+    public long countUnhandledAlerts() {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM operation_logs WHERE " + ALERT_FILTER
+                + " AND operation_result = 0", Long.class);
         return count != null ? count : 0;
     }
 

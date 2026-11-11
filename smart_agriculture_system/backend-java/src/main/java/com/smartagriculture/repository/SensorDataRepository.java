@@ -31,13 +31,20 @@ public class SensorDataRepository {
 
     private final JdbcTemplate jdbc;
 
+    /**
+     * 过滤“网关离线时写入的全 0 占位记录”：
+     * 这类记录既不是真实读数，也会让面板显示 0℃/0%、历史曲线掉到谷底。
+     */
+    private static final String VALID_READING =
+            " NOT (COALESCE(air_temperature, 0) = 0 AND COALESCE(air_humidity, 0) = 0) ";
+
     public SensorDataRepository(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
     }
 
     public SensorData findLatest() {
         List<SensorData> list = jdbc.query(
-                "SELECT * FROM sensor_data ORDER BY timestamp DESC LIMIT 1", MAPPER);
+                "SELECT * FROM sensor_data WHERE " + VALID_READING + " ORDER BY timestamp DESC LIMIT 1", MAPPER);
         return list.isEmpty() ? null : list.get(0);
     }
 
@@ -65,25 +72,25 @@ public class SensorDataRepository {
     }
 
     public List<SensorData> findBetween(LocalDateTime start, LocalDateTime end) {
-        return jdbc.query("SELECT * FROM sensor_data WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp ASC",
+        return jdbc.query("SELECT * FROM sensor_data WHERE " + VALID_READING + " AND timestamp BETWEEN ? AND ? ORDER BY timestamp ASC",
                 MAPPER, DbUtil.toTimestamp(start), DbUtil.toTimestamp(end));
     }
 
     public List<SensorData> findBetweenDesc(LocalDateTime start, LocalDateTime end) {
-        return jdbc.query("SELECT * FROM sensor_data WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp DESC",
+        return jdbc.query("SELECT * FROM sensor_data WHERE " + VALID_READING + " AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC",
                 MAPPER, DbUtil.toTimestamp(start), DbUtil.toTimestamp(end));
     }
 
     public long countBetween(LocalDateTime start, LocalDateTime end) {
         Long count = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM sensor_data WHERE timestamp BETWEEN ? AND ?",
+                "SELECT COUNT(*) FROM sensor_data WHERE " + VALID_READING + " AND timestamp BETWEEN ? AND ?",
                 Long.class, DbUtil.toTimestamp(start), DbUtil.toTimestamp(end));
         return count != null ? count : 0;
     }
 
     public List<SensorData> findPage(LocalDateTime start, LocalDateTime end, int pageSize, int offset) {
         return jdbc.query(
-                "SELECT * FROM sensor_data WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                "SELECT * FROM sensor_data WHERE " + VALID_READING + " AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 MAPPER, DbUtil.toTimestamp(start), DbUtil.toTimestamp(end), pageSize, offset);
     }
 }

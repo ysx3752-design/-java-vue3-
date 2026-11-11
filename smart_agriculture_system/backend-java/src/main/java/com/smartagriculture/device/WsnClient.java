@@ -5,16 +5,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.InputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * WSN 虚拟平台 TCP 客户端，协议实现与原 Python 版本保持一致。
@@ -23,10 +29,17 @@ public class WsnClient {
 
     private static final Logger log = LoggerFactory.getLogger(WsnClient.class);
 
-    private final String host;
+    private final String configuredHost;
     private final int port;
-    private final int connectionRetries = 5;
-    private final int retryDelayMs = 3000;
+    /** 实际连通的地址：仿真平台重启后 IP 可能变化，连上即记录，下次优先使用。 */
+    private volatile String activeHost;
+    /** 连接重试次数：保持较小值，避免请求线程被长时间占用（重连交给后台任务）。 */
+    private final int connectionRetries = 2;
+    private final int retryDelayMs = 1000;
+    /** 单次 TCP 连接超时（毫秒）。 */
+    private static final int CONNECT_TIMEOUT_MS = 4_000;
+    /** 自动发现本机网卡地址时的探测超时：本机端口通常立即拒绝，不需要等满 4 秒。 */
+    private static final int DISCOVERY_TIMEOUT_MS = 1_200;
 
     private Socket socket;
     private volatile boolean connected = false;
@@ -37,12 +50,12 @@ public class WsnClient {
     private final Map<Integer, int[]> relayStatusCache = new HashMap<>();
 
     public WsnClient(String host, int port) {
-        this.host = host;
+        this.configuredHost = host;
         this.port = port;
     }
 
     public String getHost() {
-        return host;
+        return activeHost != null ? activeHost : configuredHost;
     }
 
     public int getPort() {
@@ -62,32 +75,86 @@ public class WsnClient {
     }
 
     public synchronized boolean connect() {
-        for (int attempt = 1; attempt <= connectionRetries; attempt++) {
-            try {
-                closeSocket();
-                Socket newSocket = new Socket();
-                newSocket.connect(new InetSocketAddress(host, port), 10_000);
-                newSocket.setSoTimeout(10_000);
-                socket = newSocket;
-                connected = true;
-                lastConnectionTime = nowIso();
-                lastCommunicationTime = lastConnectionTime;
-                relayStatusCache.clear();
-                log.info("成功连接到WSN网络: {}:{}", host, port);
-                pingOnConnect();
-                return true;
-            } catch (SocketTimeoutException e) {
-                log.error("连接WSN网络超时 (尝试 {}/{})", attempt, connectionRetries);
-            } catch (Exception e) {
-                log.error("连接WSN网络失败: {} (尝试 {}/{})", e.getMessage(), attempt, connectionRetries);
-            }
-            if (attempt < connectionRetries) {
-                sleep(retryDelayMs);
+        List<String> candidates = candidateHosts();
+        for (String candidate : candidates) {
+            boolean preferred = candidate.equals(configuredHost);
+            int attempts = preferred ? connectionRetries : 1;
+            int timeout = preferred ? CONNECT_TIMEOUT_MS : DISCOVERY_TIMEOUT_MS;
+            for (int attempt = 1; attempt <= attempts; attempt++) {
+                try {
+                    closeSocket();
+                    Socket newSocket = new Socket();
+                    newSocket.connect(new InetSocketAddress(candidate, port), timeout);
+                    newSocket.setSoTimeout(10_000);
+                    socket = newSocket;
+                    connected = true;
+                    lastConnectionTime = nowIso();
+                    lastCommunicationTime = lastConnectionTime;
+                    relayStatusCache.clear();
+                    activeHost = candidate;
+                    if (!preferred) {
+                        log.warn("配置的网关 {}:{} 不可达，已自动切换到本机仿真平台 {}:{}（建议把 .env 的 WSN_HOST 改为该地址）",
+                                configuredHost, port, candidate, port);
+                    }
+                    log.info("成功连接到WSN网络: {}:{}", candidate, port);
+                    pingOnConnect();
+                    return true;
+                } catch (SocketTimeoutException e) {
+                    log.warn("连接WSN网络超时 {}:{} (尝试 {}/{})", candidate, port, attempt, attempts);
+                } catch (Exception e) {
+                    log.warn("连接WSN网络失败 {}:{}: {} (尝试 {}/{})", candidate, port, e.getMessage(), attempt, attempts);
+                }
+                if (attempt < attempts) {
+                    sleep(retryDelayMs);
+                }
             }
         }
         connected = false;
-        log.error("多次尝试后无法连接到WSN网络，请检查设备和网络设置");
+        log.error("无法连接到WSN网络，已尝试地址: {}，请确认仿真平台已启动并查看其网关面板显示的 IP:Port", candidates);
         return false;
+    }
+
+    /**
+     * 候选网关地址：已连通的地址 → .env 配置地址 → 本机回环与各网卡 IPv4。
+     * 京胜世纪 KPC 仿真平台的 WSN 服务只绑定在它当前使用的网卡上，
+     * 每次启动 IP 可能变化（如 10.42.67.35 → 10.41.225.116），因此这里做本机自动发现。
+     */
+    private List<String> candidateHosts() {
+        Set<String> hosts = new LinkedHashSet<>();
+        if (activeHost != null && !activeHost.isBlank()) {
+            hosts.add(activeHost);
+        }
+        if (configuredHost != null && !configuredHost.isBlank()) {
+            hosts.add(configuredHost);
+        }
+        hosts.add("127.0.0.1");
+        hosts.addAll(localIpv4Addresses());
+        return new ArrayList<>(hosts);
+    }
+
+    /** 枚举本机所有可用网卡的 IPv4 地址（跳过回环与 169.254 链路本地地址）。 */
+    private List<String> localIpv4Addresses() {
+        List<String> addresses = new ArrayList<>();
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface networkInterface = interfaces.nextElement();
+                if (!networkInterface.isUp() || networkInterface.isLoopback()) {
+                    continue;
+                }
+                Enumeration<InetAddress> inetAddresses = networkInterface.getInetAddresses();
+                while (inetAddresses.hasMoreElements()) {
+                    InetAddress address = inetAddresses.nextElement();
+                    if (address instanceof Inet4Address && !address.isLoopbackAddress()
+                            && !address.isLinkLocalAddress()) {
+                        addresses.add(address.getHostAddress());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("枚举本机网卡地址失败: {}", e.getMessage());
+        }
+        return addresses;
     }
 
     private void pingOnConnect() {

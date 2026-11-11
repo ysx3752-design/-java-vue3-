@@ -10,17 +10,22 @@ export function getDevices() {
 
 // 获取设备连接状态
 export function getConnectionStatus() {
-  console.log('获取设备连接状态')
   return request({
     url: '/api/device/connection-status',
-    method: 'get'
+    method: 'get',
+    // 连接状态属于可降级信息：短超时、不重试、不弹全局错误提示，
+    // 避免网关离线时控制面板被拖到 30 秒超时并满屏报错
+    timeout: 5000,
+    retry: 0,
+    silent: true
   }).then(response => {
     // 处理响应数据，确保格式一致
     return {
       status: response.status || (response.connected ? 'connected' : 'disconnected'),
       message: response.message || (response.connected ? '已连接' : '未连接'),
-      totalDevices: response.total_devices || 0,
-      connectedDevices: response.connected_devices || 0,
+      totalDevices: response.total_devices ?? 0,
+      connectedDevices: response.connected_devices ?? 0,
+      connecting: Boolean(response.connecting),
       lastCommunication: response.last_communication || null
     }
   }).catch(error => {
@@ -31,6 +36,7 @@ export function getConnectionStatus() {
       message: '连接失败: ' + (error.message || '未知错误'),
       totalDevices: 0,
       connectedDevices: 0,
+      connecting: false,
       lastCommunication: null
     }
   })

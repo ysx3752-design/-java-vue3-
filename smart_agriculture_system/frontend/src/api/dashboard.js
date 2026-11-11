@@ -15,23 +15,19 @@ function ensureArray(data) {
  * 包括：传感器数据、设备状态、警报信息
  */
 export function getDashboardData() {
-  return Promise.all([
+  // 用 allSettled：任何一项失败（例如网关离线导致连接状态拿不到）都不影响其余数据展示
+  return Promise.allSettled([
     getSensorData(),
     getDeviceStatus(),
     getAlerts(),
     getConnectionStatus()
-  ]).then(([sensorData, deviceStatus, alerts, connectionStatus]) => {
+  ]).then(([sensorResult, deviceResult, alertResult, connectionResult]) => {
+    const pick = (result, fallback) => (result.status === 'fulfilled' && result.value !== undefined ? result.value : fallback)
     return {
-      sensorData,
-      deviceStatus,
-      alerts: ensureArray(alerts),
-      connectionStatus
-    }
-  }).catch(error => {
-    console.error('获取仪表盘数据失败:', error)
-    return {
-      error: '获取仪表盘数据失败',
-      message: error.message || '未知错误'
+      sensorData: pick(sensorResult, null),
+      deviceStatus: pick(deviceResult, { devices: [] }),
+      alerts: ensureArray(pick(alertResult, [])),
+      connectionStatus: pick(connectionResult, null)
     }
   })
 }

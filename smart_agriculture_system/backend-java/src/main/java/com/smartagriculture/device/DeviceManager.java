@@ -8,6 +8,9 @@ import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 设备管理器：负责设备连接、状态维护、控制与传感器数据缓存。
@@ -24,6 +27,15 @@ public class DeviceManager {
     private Map<String, Double> cachedSensorData;
     private long lastSensorUpdate = 0;
     private final long sensorCacheSeconds = 110;
+
+    /** 异步连接线程：负责在后台尝试连接，避免 HTTP 请求线程被 TCP 超时拖住。 */
+    private final ExecutorService connectExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "wsn-connect");
+        thread.setDaemon(true);
+        return thread;
+    });
+    /** 是否有连接尝试正在进行，用于去重，避免刷页面时并发堆积连接任务。 */
+    private final AtomicBoolean connecting = new AtomicBoolean(false);
 
     public DeviceManager() {
         this.wsnClient = new WsnClient(DeviceConfig.CONTROLLER_IP, DeviceConfig.CONTROLLER_PORT);
@@ -55,6 +67,29 @@ public class DeviceManager {
         initRelayCache();
         log.info("设备管理器初始化完成");
         return true;
+    }
+
+    public boolean isConnecting() {
+        return connecting.get();
+    }
+
+    /**
+     * 非阻塞地发起一次连接。已在连接中或已连接时直接返回，调用方拿到的始终是当前状态，
+     * 不会因为 WSN 网关不可达而等待数十秒。
+     */
+    public void requestConnectAsync() {
+        if (wsnClient.isConnected() || !connecting.compareAndSet(false, true)) {
+            return;
+        }
+        connectExecutor.submit(() -> {
+            try {
+                connect();
+            } catch (Exception e) {
+                log.error("异步连接设备失败: {}", e.getMessage());
+            } finally {
+                connecting.set(false);
+            }
+        });
     }
 
     public void initRelayCache() {
@@ -129,18 +164,35 @@ public class DeviceManager {
 
     /**
      * 获取传感器数据，带 110 秒缓存。
+     * 未连接时直接返回缓存/空数据，不触发 TCP 连接，保证接口快速返回。
      */
-    public synchronized Map<String, Double> getSensorData() {
-        long now = System.currentTimeMillis() / 1000;
-        if (cachedSensorData != null && now - lastSensorUpdate < sensorCacheSeconds) {
-            log.info("使用缓存的传感器数据");
-            return new LinkedHashMap<>(cachedSensorData);
+    public Map<String, Double> getSensorData() {
+        if (!wsnClient.isConnected()) {
+            if (cachedSensorData != null && !isPlaceholder(cachedSensorData)) {
+                return new LinkedHashMap<>(cachedSensorData);
+            }
+            // 返回空 map：调用方据此回退到数据库最新值，而不是把全 0 当成真实读数
+            return new LinkedHashMap<>();
         }
-        Map<String, Double> raw = wsnClient.getSensorData();
-        Map<String, Double> processed = processSensorData(raw);
-        cachedSensorData = new LinkedHashMap<>(processed);
-        lastSensorUpdate = now;
-        return processed;
+        synchronized (this) {
+            long now = System.currentTimeMillis() / 1000;
+            if (cachedSensorData != null && now - lastSensorUpdate < sensorCacheSeconds) {
+                log.info("使用缓存的传感器数据");
+                return new LinkedHashMap<>(cachedSensorData);
+            }
+            Map<String, Double> raw = wsnClient.getSensorData();
+            Map<String, Double> processed = processSensorData(raw);
+            cachedSensorData = new LinkedHashMap<>(processed);
+            lastSensorUpdate = now;
+            return processed;
+        }
+    }
+
+    /** 温度与湿度同时为 0，说明是网关离线时的占位值，不是真实读数。 */
+    private boolean isPlaceholder(Map<String, Double> data) {
+        Double temperature = data.get("air_temperature");
+        Double humidity = data.get("air_humidity");
+        return temperature != null && humidity != null && temperature == 0.0 && humidity == 0.0;
     }
 
     private Map<String, Double> processSensorData(Map<String, Double> raw) {
