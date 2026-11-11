@@ -29,10 +29,10 @@ public final class DeviceConfig {
         Map<String, Device> devices = new LinkedHashMap<>();
         devices.put("external_shade", new Device("external_shade", "外遮阳", "控制温室外部遮阳系统", 0x2001, 1));
         devices.put("internal_shade", new Device("internal_shade", "内遮阳", "控制温室内部遮阳系统", 0x2001, 2));
-        devices.put("skylight", new Device("skylight", "天窗", "控制温室顶部天窗", 0x2003, 1));
-        devices.put("spray", new Device("spray", "喷灌", "控制温室喷灌系统", 0x2003, 2));
-        devices.put("water_curtain", new Device("water_curtain", "水帘", "控制温室水帘系统", 0x2003, 3));
-        devices.put("light", new Device("light", "灯光", "控制温室照明系统", 0x2003, 4));
+        devices.put("skylight", new Device("skylight", "天窗", "控制温室顶部天窗", 0x2002, 1));
+        devices.put("spray", new Device("spray", "喷灌", "控制温室喷灌系统", 0x2002, 2));
+        devices.put("water_curtain", new Device("water_curtain", "水帘", "控制温室水帘系统", 0x2002, 3));
+        devices.put("light", new Device("light", "灯光", "控制温室照明系统", 0x2002, 4));
         devices.put("external_fan", new Device("external_fan", "外通风", "控制温室外部通风系统", 0x2001, 3));
         devices.put("internal_fan", new Device("internal_fan", "内通风", "控制温室内部通风系统", 0x2001, 4));
         DEVICES = Collections.unmodifiableMap(devices);

@@ -1,37 +1,15 @@
-# ===== 演示与素材（不参与协作开发） =====
-*.mp4
-*.mov
-*.avi
-*.mkv
-*.pptx
-*.ppt
-*.zip
-*.rar
-*.7z
-
-# ===== 课程/竞赛过程文档（仅本地保留，不入库） =====
-/2025年第十一届河南省高等学校物联网设计大赛设计文档模板(1)(1)(1).docx
-/物联网应用系统设计课程设计.docx
-/第9组基于Python及Vue的智能农业管理系统.docx
-
-# ===== 历史备份与失败试验目录 =====
-/备份/
-/失败/
-
-# ===== 环境与密钥（含数据库口令，禁止提交） =====
+# ===== 环境与密钥（禁止提交）=====
 .env
-.env.local
+.env.*
+!.env.example
 *.env.local
-!*.env.example
 
 # ===== Python =====
 __pycache__/
 *.py[cod]
-*.pyo
 .venv/
 venv/
 .conda/
-.conda-env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -47,9 +25,11 @@ dist-ssr/
 target/
 *.class
 *.jar
+*.war
 
 # ===== 日志与运行时产物 =====
 logs/
+backend.log
 *.log
 *.pid
 *.tmp
@@ -57,6 +37,7 @@ logs/
 # ===== IDE / 操作系统 =====
 .idea/
 .vscode/
+.workbuddy/
 .DS_Store
 Thumbs.db
 desktop.ini

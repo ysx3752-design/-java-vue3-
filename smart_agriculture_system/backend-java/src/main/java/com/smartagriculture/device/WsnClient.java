@@ -137,6 +137,63 @@ public class WsnClient {
         relayStatusCache.put(relayId, status.clone());
     }
 
+    /**
+     * 用广播查询读取两块继电器板的真实通道状态并刷新缓存。
+     * 回帧格式：B5 20 [板地址] [通道1..4] FF 5B，一块板一帧。
+     * 控制在执行前先同步，避免用陈旧缓存把同板其它通道误关。
+     */
+    public synchronized void syncRelayStatusFromHardware() {
+        if (!connected || socket == null) {
+            return;
+        }
+        try {
+            byte[] command = {(byte) 0xA5, 0x00, 0x00, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 0x5A};
+            drainInputBuffer();
+            socket.setSoTimeout(1500);
+            socket.getOutputStream().write(command);
+            socket.getOutputStream().flush();
+            lastCommunicationTime = nowIso();
+
+            byte[] data = new byte[0];
+            byte[] buffer = new byte[1024];
+            long start = System.currentTimeMillis();
+            while (System.currentTimeMillis() - start < 1500) {
+                try {
+                    int read = socket.getInputStream().read(buffer);
+                    if (read <= 0) {
+                        break;
+                    }
+                    byte[] merged = new byte[data.length + read];
+                    System.arraycopy(data, 0, merged, 0, data.length);
+                    System.arraycopy(buffer, 0, merged, data.length, read);
+                    data = merged;
+                    if (data.length >= 9 * 6) {
+                        break;
+                    }
+                } catch (SocketTimeoutException e) {
+                    break;
+                }
+            }
+
+            for (int i = 0; i <= data.length - 9; i += 9) {
+                if ((data[i] & 0xFF) != 0xB5 || (data[i + 8] & 0xFF) != 0x5B) {
+                    continue;
+                }
+                if ((data[i + 1] & 0xFF) != 0x20) {
+                    continue;
+                }
+                int address = 0x2000 | (data[i + 2] & 0xFF);
+                int[] status = new int[4];
+                for (int channel = 0; channel < 4; channel++) {
+                    status[channel] = data[i + 3 + channel] != 0 ? 1 : 0;
+                }
+                relayStatusCache.put(address, status);
+            }
+        } catch (Exception e) {
+            log.debug("同步继电器状态失败，沿用当前缓存: {}", e.getMessage());
+        }
+    }
+
     public synchronized boolean sendCommand(String deviceType, String action) {
         if (!connected) {
             if (!connect()) {
@@ -157,6 +214,7 @@ public class WsnClient {
             }
             int actionValue = "open".equalsIgnoreCase(action) ? 1 : 0;
 
+            syncRelayStatusFromHardware();
             int[] relayStatus = getCurrentRelayStatus(deviceId);
             relayStatus[portIndex] = actionValue;
             relayStatusCache.put(deviceId, relayStatus.clone());
@@ -211,29 +269,11 @@ public class WsnClient {
                 return null;
             }
 
-            byte[] command = {(byte) 0xA5, 0x00, (byte) (deviceId & 0xFF),
-                    (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 0x5A};
-            socket.getOutputStream().write(command);
-            socket.getOutputStream().flush();
-            lastCommunicationTime = nowIso();
-            socket.setSoTimeout(3000);
-
-            try {
-                byte[] response = readOnce();
-                if (response.length > 0) {
-                    lastCommunicationTime = nowIso();
-                    debugPrintResponse(response, deviceType + "状态查询");
-                    List<Boolean> relayStatus = parseRelayStatus(response);
-                    relayStatusCache.put(deviceId, toIntArray(relayStatus));
-                    log.info("设备 {} 状态: {}", deviceType, relayStatus.get(portIndex) ? 1 : 0);
-                    return relayStatus.get(portIndex) ? 1 : 0;
-                }
-                log.warn("无法获取设备 {} 的状态，返回默认值0（关闭）", deviceType);
-                return 0;
-            } catch (SocketTimeoutException e) {
-                log.error("查询设备 {} 状态超时，返回默认状态0（关闭）", deviceType);
-                return 0;
-            }
+            // 单板查询网关不响应，统一走广播同步后的缓存
+            syncRelayStatusFromHardware();
+            int value = getCurrentRelayStatus(deviceId)[portIndex];
+            log.info("设备 {} 状态: {}", deviceType, value);
+            return value;
         } catch (Exception e) {
             log.error("查询设备 {} 状态失败: {}", deviceType, e.getMessage());
             connected = false;
@@ -376,28 +416,6 @@ public class WsnClient {
         command[7] = (byte) 0xFF;
         command[8] = 0x5A;
         return command;
-    }
-
-    private List<Boolean> parseRelayStatus(byte[] response) {
-        List<Boolean> status = new ArrayList<>(4);
-        if (response.length >= 8 && (response[0] & 0xFF) == 0xA5 && (response[response.length - 1] & 0xFF) == 0x5A) {
-            for (int i = 0; i < 4; i++) {
-                status.add(i + 3 < response.length && response[i + 3] == 1);
-            }
-        } else {
-            for (int i = 0; i < 4; i++) {
-                status.add(false);
-            }
-        }
-        return status;
-    }
-
-    private int[] toIntArray(List<Boolean> list) {
-        int[] array = new int[4];
-        for (int i = 0; i < 4; i++) {
-            array[i] = list.get(i) ? 1 : 0;
-        }
-        return array;
     }
 
     private void drainInputBuffer() {

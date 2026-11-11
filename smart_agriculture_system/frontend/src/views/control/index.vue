@@ -38,6 +38,9 @@
       </div>
     </el-card>
 
+    <!-- 实时环境数据 -->
+    <realtime-metrics class="mb-4" title="实时环境数据" :interval="5000" />
+
     <!-- 设备列表 -->
     <el-row :gutter="20">
       <el-col :xs="24" :sm="12" :md="8" :lg="6" v-for="device in deviceList" :key="device.type">
@@ -104,9 +107,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
 import { useControlStore } from '@/store/control'
 import { controlDevice, getDeviceStatus, getConnectionStatus } from '@/api/device'
+import RealtimeMetrics from '@/components/RealtimeMetrics.vue'
 import { ElMessage } from 'element-plus'
 import { 
   Monitor, 
@@ -144,22 +148,22 @@ const DEVICE_CONFIG = {
   },
   'skylight': {
     'name': '天窗',
-    'relay_address': 0x2003,
+    'relay_address': 0x2002,
     'relay_port': 0x01
   },
   'spray': {
     'name': '喷灌',
-    'relay_address': 0x2003,
+    'relay_address': 0x2002,
     'relay_port': 0x02
   },
   'water_curtain': {
     'name': '水帘',
-    'relay_address': 0x2003,
+    'relay_address': 0x2002,
     'relay_port': 0x03
   },
   'light': {
     'name': '灯光',
-    'relay_address': 0x2003,
+    'relay_address': 0x2002,
     'relay_port': 0x04
   }
 }
@@ -393,39 +397,51 @@ const handleControl = async (deviceType, action) => {
 // 更新状态的定时器
 let statusTimer = null;
 
+const startStatusTimer = () => {
+  if (statusTimer) return
+  // 设置自动刷新定时器（每60秒刷新一次连接状态，每120秒刷新一次设备状态）
+  statusTimer = setInterval(async () => {
+    console.log('自动刷新状态')
+    try {
+      await refreshConnectionStatus()
+
+      // 每隔两次刷新设备状态
+      if (Math.floor(Date.now() / 1000) % 120 < 5) {
+        await refreshDevices()
+      }
+    } catch (e) {
+      console.error('自动刷新状态失败:', e)
+    }
+  }, 60000) // 60秒
+}
+
+const stopStatusTimer = () => {
+  if (statusTimer) {
+    clearInterval(statusTimer)
+    statusTimer = null
+  }
+}
+
 // 组件挂载时获取设备列表和初始状态
 onMounted(async () => {
   try {
     await refreshConnectionStatus()
     await refreshDevices()
-    
-    // 设置自动刷新定时器（每60秒刷新一次连接状态，每120秒刷新一次设备状态）
-    statusTimer = setInterval(async () => {
-      console.log('自动刷新状态')
-      try {
-        await refreshConnectionStatus()
-        
-        // 每隔两次刷新设备状态
-        if (Math.floor(Date.now() / 1000) % 120 < 5) {
-          await refreshDevices()
-        }
-      } catch (e) {
-        console.error('自动刷新状态失败:', e)
-      }
-    }, 60000) // 60秒
+    startStatusTimer()
   } catch (error) {
     console.error('初始化失败:', error)
     ElMessage.error('初始化失败，请刷新页面重试')
   }
 })
 
+// keep-alive 缓存页面：切回来时恢复轮询
+onActivated(startStatusTimer)
+
+// 切走时暂停轮询，避免后台空转
+onDeactivated(stopStatusTimer)
+
 // 组件卸载时清除定时器
-onUnmounted(() => {
-  if (statusTimer) {
-    clearInterval(statusTimer)
-    statusTimer = null
-  }
-})
+onUnmounted(stopStatusTimer)
 </script>
 
 <style scoped>

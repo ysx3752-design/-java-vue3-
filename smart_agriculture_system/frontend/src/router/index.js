@@ -15,6 +15,12 @@ const routes = [
         meta: { title: '控制面板', requiresAuth: true }
       },
       {
+        path: 'twin',
+        name: 'DigitalTwin',
+        component: () => import('@/views/twin/index.vue'),
+        meta: { title: '数字孪生', requiresAuth: true }
+      },
+      {
         path: 'monitor',
         name: 'Monitor',
         component: () => import('@/views/monitor/index.vue'),

@@ -1,6 +1,17 @@
 <!-- 环境监测页面 -->
 <template>
   <div class="monitor-container">
+    <!-- 实时采集状态条 -->
+    <div class="live-bar">
+      <span class="live-dot" :class="{ stale: !monitorStore.isFresh }"></span>
+      <span class="live-text">{{ monitorStore.isFresh ? '实时采集中' : '等待数据' }}</span>
+      <span class="live-divider"></span>
+      <span class="live-meta">每 5 秒刷新</span>
+      <span class="live-meta">最后更新 {{ monitorStore.shortLastUpdateTime }}</span>
+      <span class="live-meta">数据源：{{ monitorStore.sourceLabel }}</span>
+      <span v-if="monitorStore.error" class="live-error">{{ monitorStore.error }}</span>
+    </div>
+
     <!-- 实时数据卡片 -->
     <el-row :gutter="10">
       <el-col :span="4" :xs="12" :sm="8" :md="6" :lg="4" v-for="(item, index) in monitorItems" :key="index">
@@ -18,7 +29,7 @@
             <span>{{ item.label }}</span>
           </div>
           <div class="card-content">
-            <span class="value" :class="`value-${item.key}`">{{ 
+            <span class="value" :class="[`value-${item.key}`, { 'value-flash': flashKey === item.key }]">{{ 
               typeof realTimeData[item.key] === 'number' 
                 ? item.key === 'light_intensity' || item.key === 'co2_level' 
                   ? realTimeData[item.key].toFixed(0) 
@@ -131,14 +142,17 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
-import { useMonitorStore } from '@/store/monitor'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
+import { getHistoryData, getHistoryRange } from '@/api/monitor'
+import { useRealtimeFeed } from '@/composables/useRealtimeFeed'
+import { bucketSeries } from '@/utils/chartSeries'
 import { Sunrise, Sunset, Cloudy, Lightning, Histogram, Loading } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
-import { getHistoryData } from '@/api/monitor'
 
-const monitorStore = useMonitorStore()
+const monitorStore = useRealtimeFeed(5000)
+// 趋势图专用数据：完整时间段的聚合点，与下方表格的分页数据解耦
+const chartSeries = ref([])
 const historyChart = ref(null)
 const chartInitialized = ref(false)
 let chartInstance = null
@@ -164,6 +178,32 @@ const total = ref(0)
 const realTimeData = computed(() => monitorStore.realTimeData)
 const historyData = computed(() => monitorStore.historyData)
 const formattedLastUpdateTime = computed(() => monitorStore.formattedLastUpdateTime)
+
+// 数值变化时短暂高亮，便于察觉实时刷新
+const flashKey = ref('')
+let flashTimer = null
+let prevValues = {}
+watch(
+  () => monitorStore.realTimeData,
+  (now) => {
+    let changed = ''
+    monitorItems.forEach((item) => {
+      const value = Number(now[item.key])
+      if (prevValues[item.key] !== undefined && prevValues[item.key] !== value && !Number.isNaN(value)) {
+        changed = item.key
+      }
+      prevValues[item.key] = value
+    })
+    if (changed) {
+      flashKey.value = changed
+      clearTimeout(flashTimer)
+      flashTimer = setTimeout(() => {
+        flashKey.value = ''
+      }, 800)
+    }
+  },
+  { deep: true, immediate: true }
+)
 
 // 日期快捷选项
 const dateShortcuts = [
@@ -228,9 +268,9 @@ const handleMetricChange = (value) => {
   }
 }
 
+
 // 处理卡片点击
-const handleCardClick = (key) => {
-  // 如果已经选中了这个传感器，不做任何操作
+const handleCardClick = (key) => {  // 如果已经选中了这个传感器，不做任何操作
   if (selectedMetric.value === key) return
   
   selectedMetric.value = key
@@ -348,6 +388,22 @@ const fetchHistoryData = async () => {
       total.value = 0
     }
     
+    // 趋势图单独取完整区间数据（不跟着表格分页走），再按时间段聚合
+    try {
+      const rangeResponse = await getHistoryRange({
+        start_date: dateRange.value[0].toISOString(),
+        end_date: dateRange.value[1].toISOString()
+      })
+      const rows = Array.isArray(rangeResponse) ? rangeResponse : (rangeResponse?.data || [])
+      const hours = Math.max(1, (dateRange.value[1] - dateRange.value[0]) / 3600000)
+      // 24 小时显示 24 个点，时间跨度越大适当增加，上限 72 个避免过密
+      const points = Math.min(72, Math.max(24, Math.round(hours)))
+      chartSeries.value = bucketSeries(rows, { points, hours, end: dateRange.value[1] })
+    } catch (rangeError) {
+      console.warn('获取区间历史数据失败，趋势图退回当前页数据:', rangeError)
+      chartSeries.value = monitorStore.historyData
+    }
+
     // 确保DOM已经更新后再更新图表
     setTimeout(() => {
       if (chartInstance && historyChart.value) {
@@ -358,6 +414,7 @@ const fetchHistoryData = async () => {
     console.error('获取历史数据失败:', error)
     ElMessage.error('获取历史数据失败')
     monitorStore.historyData = []
+    chartSeries.value = []
     total.value = 0
   } finally {
     monitorStore.loading = false
@@ -374,6 +431,20 @@ const updateChart = () => {
   // 使用nextTick确保DOM已更新
   nextTick(() => {
     try {
+      // 图表实例绑定的 DOM 与当前 ref 不一致时（热更新、keep-alive 重建等），
+      // 旧实例会一直画在已脱离文档的 canvas 上，表现为"换了指标但图不变"
+      if (chartInstance && typeof chartInstance.getDom === 'function'
+          && chartInstance.getDom() !== historyChart.value) {
+        console.warn('图表实例与当前容器不一致，重新初始化')
+        try {
+          chartInstance.dispose()
+        } catch (e) {
+          console.warn('销毁旧图表实例失败:', e)
+        }
+        chartInstance = null
+        chartInitialized.value = false
+      }
+
       // 确保图表实例正确初始化
       if (!chartInstance) {
         try {
@@ -419,8 +490,8 @@ const updateChart = () => {
         }
       }
       
-      // 确保historyData是数组且有数据
-      if (!Array.isArray(monitorStore.historyData) || monitorStore.historyData.length === 0) {
+      // 趋势图使用聚合后的完整区间数据
+      if (!Array.isArray(chartSeries.value) || chartSeries.value.length === 0) {
         console.warn('历史数据为空或不是数组，不更新图表')
         chartInstance.setOption({
           title: {
@@ -437,7 +508,7 @@ const updateChart = () => {
       }
 
       // 数据转换
-      const data = (monitorStore.historyData || [])
+      const data = (chartSeries.value || [])
         .filter(item => item && item.timestamp)
         .map(item => {
           try {
@@ -716,13 +787,19 @@ const handleResize = () => {
   }
 }
 
+// 指标切换后立即按现有数据重绘一次，避免数据请求失败时图表停留在上一个指标
+watch(selectedMetric, () => {
+  nextTick(() => {
+    if (Array.isArray(chartSeries.value) && chartSeries.value.length > 0) {
+      updateChart()
+    }
+  })
+})
+
 // 生命周期钩子
 onMounted(async () => {
   try {
-    // 初始化数据
-    await monitorStore.fetchRealTimeData()
-    // 开始实时数据更新
-    monitorStore.startRealTimeUpdate()
+    // 实时数据由 useRealtimeFeed 统一订阅（挂载即拉取一次，之后每 5 秒刷新）
     
     // 设置默认日期范围（过去24小时）
     const end = new Date()
@@ -794,9 +871,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   try {
-    // 停止实时数据更新
-    monitorStore.stopRealTimeUpdate()
-    
+    // 实时轮询由 useRealtimeFeed 在 onDeactivated / onUnmounted 中释放
+
     // 移除窗口大小变化的监听器
     window.removeEventListener('resize', handleResize)
     
@@ -840,6 +916,85 @@ const handleExport = () => {
 </script>
 <style lang="scss">
 @import '@/styles/components/monitor.scss';
+
+/* 实时采集状态条 */
+.live-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  margin-bottom: 12px;
+  background: #fff;
+  border: 1px solid #eaf0f4;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #8593a0;
+
+  .live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #52c41a;
+    animation: monitor-pulse 2s infinite;
+
+    &.stale {
+      background: #c0c4cc;
+      animation: none;
+      box-shadow: none;
+    }
+  }
+
+  .live-text {
+    font-size: 13px;
+    font-weight: 600;
+    color: #2f3b45;
+  }
+
+  .live-divider {
+    width: 1px;
+    height: 12px;
+    background: #e4ebf1;
+  }
+
+  .live-meta {
+    color: #8593a0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .live-error {
+    color: #f56c6c;
+  }
+}
+
+@keyframes monitor-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(82, 196, 26, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(82, 196, 26, 0);
+  }
+}
+
+/* 数值变化高亮 */
+.value-flash {
+  animation: value-flash 0.8s ease;
+}
+
+@keyframes value-flash {
+  0% {
+    background: rgba(64, 158, 255, 0.16);
+    box-shadow: 0 0 0 4px rgba(64, 158, 255, 0.14);
+    border-radius: 6px;
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 0 rgba(64, 158, 255, 0);
+    border-radius: 6px;
+  }
+}
 
 /* 修改卡片大小和颜色 */
 .monitor-card {

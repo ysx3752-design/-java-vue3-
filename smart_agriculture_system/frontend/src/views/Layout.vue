@@ -18,6 +18,10 @@
           <el-icon class="menu-icon"><Monitor /></el-icon>
           <span>控制面板</span>
         </el-menu-item>
+        <el-menu-item index="/twin" class="menu-item">
+          <el-icon class="menu-icon"><Box /></el-icon>
+          <span>数字孪生</span>
+        </el-menu-item>
         <el-menu-item index="/monitor" class="menu-item">
           <el-icon class="menu-icon"><DataLine /></el-icon>
           <span>环境监测</span>
@@ -104,7 +108,8 @@ const {
   Document,
   Fold,
   Expand,
-  User
+  User,
+  Box
 } = ElementPlusIconsVue
 
 const isCollapse = ref(false)

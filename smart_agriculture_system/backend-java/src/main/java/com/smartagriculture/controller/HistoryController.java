@@ -2,6 +2,7 @@ package com.smartagriculture.controller;
 
 import com.smartagriculture.model.SensorData;
 import com.smartagriculture.repository.SensorDataRepository;
+import com.smartagriculture.service.SensorSimulator;
 import com.smartagriculture.util.Maps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,7 +50,13 @@ public class HistoryController {
             }
             List<Map<String, Object>> data = new ArrayList<>();
             for (SensorData record : sensorDataRepository.findBetween(start, end)) {
-                data.add(record.toMap());
+                // 硬件离线期间写入的全 0 记录不参与趋势展示，否则会画出假的深坑
+                if (isPlaceholder(record)) {
+                    continue;
+                }
+                Map<String, Object> row = record.toMap();
+                SensorSimulator.applyRow(row, record.timestamp);
+                data.add(row);
             }
             log.info("获取历史数据 {} 条: {} 至 {} (指标: {})", data.size(), start, end, metric);
             return ResponseEntity.ok(data);
@@ -109,7 +116,9 @@ public class HistoryController {
             int offset = (page - 1) * pageSize;
             List<Map<String, Object>> items = new ArrayList<>();
             for (SensorData record : sensorDataRepository.findPage(start, end, pageSize, offset)) {
-                items.add(record.toMap());
+                Map<String, Object> row = record.toMap();
+                SensorSimulator.applyRow(row, record.timestamp);
+                items.add(row);
             }
             Map<String, Object> meta = new LinkedHashMap<>();
             meta.put("total", total);
@@ -123,6 +132,15 @@ public class HistoryController {
             log.error("获取历史传感器数据失败: {}", e.getMessage());
             return ResponseEntity.status(500).body(Maps.of("error", "获取历史传感器数据失败"));
         }
+    }
+
+    /**
+     * 硬件离线期间写入的占位记录（温湿度均为 0）。
+     */
+    static boolean isPlaceholder(SensorData record) {
+        boolean tempEmpty = record.air_temperature == null || record.air_temperature == 0;
+        boolean humidityEmpty = record.air_humidity == null || record.air_humidity == 0;
+        return tempEmpty && humidityEmpty;
     }
 
     /**

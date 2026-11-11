@@ -69,7 +69,6 @@ create table threshold_settings
         foreign key (user_id) references users (id)
 )
     comment '阈值设置表';
-
+ 
 create index user_id
     on threshold_settings (user_id);
-

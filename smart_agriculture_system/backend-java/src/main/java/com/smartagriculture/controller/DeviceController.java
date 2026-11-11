@@ -7,6 +7,7 @@ import com.smartagriculture.model.SensorData;
 import com.smartagriculture.repository.DeviceStatusRepository;
 import com.smartagriculture.repository.OperationLogRepository;
 import com.smartagriculture.repository.SensorDataRepository;
+import com.smartagriculture.service.SensorSimulator;
 import com.smartagriculture.util.Maps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -198,12 +199,9 @@ public class DeviceController {
                 if (deviceManager.getWsnClient().isConnected()) {
                     realtimeData = deviceManager.getSensorData();
                     if (realtimeData != null && !realtimeData.isEmpty()) {
-                        log.info("成功获取实时传感器数据");
-                        try {
-                            sensorDataRepository.insert(SensorData.of(realtimeData, LocalDateTime.now()));
-                        } catch (Exception e) {
-                            log.warn("保存实时传感器数据失败: {}", e.getMessage());
-                        }
+                        // 落库统一交给 BackgroundTasks 的定时采样（默认 2 分钟一条），
+                        // 这里只读不写，否则每个页面轮询都会插一条重复记录，历史表几秒一行
+                        log.debug("成功获取实时传感器数据");
                     }
                 }
             } catch (Exception e) {
@@ -216,8 +214,10 @@ public class DeviceController {
                     SensorData latest = sensorDataRepository.findLatest();
                     if (latest != null) {
                         log.info("从数据库获取最新传感器数据");
+                        Map<String, Object> latestMap = latest.toMap();
+                        SensorSimulator.applyRow(latestMap, latest.timestamp);
                         Map<String, Object> result = Maps.of(
-                                "data", latest.toMap(),
+                                "data", latestMap,
                                 "source", "database",
                                 "timestamp", latest.timestamp != null ? latest.timestamp.toString() : null
                         );
@@ -248,10 +248,12 @@ public class DeviceController {
                 }
             }
 
+            LocalDateTime now = LocalDateTime.now();
+            Map<String, Double> displayData = SensorSimulator.apply(realtimeData, now);
             return ResponseEntity.ok(Maps.of(
-                    "data", realtimeData,
+                    "data", displayData,
                     "source", "realtime",
-                    "timestamp", LocalDateTime.now().toString()
+                    "timestamp", now.toString()
             ));
         } catch (Exception e) {
             log.error("处理传感器数据请求失败: {}", e.getMessage());

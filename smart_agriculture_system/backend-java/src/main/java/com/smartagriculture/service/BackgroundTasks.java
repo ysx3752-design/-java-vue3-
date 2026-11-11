@@ -1,5 +1,6 @@
 package com.smartagriculture.service;
 
+import com.smartagriculture.config.AppEnv;
 import com.smartagriculture.device.DeviceManager;
 import com.smartagriculture.model.SensorData;
 import com.smartagriculture.repository.SensorDataRepository;
@@ -92,7 +93,7 @@ public class BackgroundTasks {
 
     private void monitorLoop() {
         while (true) {
-            sleep(120_000);
+            sleep(sampleIntervalMs());
             try {
                 Map<String, Double> sensorData = deviceManager.getSensorData();
                 if (sensorData == null || sensorData.isEmpty()) {
@@ -103,7 +104,8 @@ public class BackgroundTasks {
                 sensorDataRepository.insert(record);
                 log.info("已保存传感器数据: 温度={}°C, 湿度={}%",
                         record.air_temperature, record.air_humidity);
-                monitorService.checkThresholds(sensorData);
+                // 阈值判断用与页面展示一致的波动后数值，避免"显示已超限却不报警"
+                monitorService.checkThresholds(SensorSimulator.apply(sensorData, record.timestamp));
             } catch (Exception e) {
                 log.error("传感器数据采集任务失败: {}", e.getMessage());
             }
@@ -116,5 +118,23 @@ public class BackgroundTasks {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * 定时采样间隔，可通过 SENSOR_SAMPLE_SECONDS 调整，默认 120 秒。
+     * 该值决定历史数据表的记录密度。
+     */
+    private static long sampleIntervalMs() {
+        String raw = AppEnv.get("SENSOR_SAMPLE_SECONDS", "120");
+        try {
+            long seconds = Long.parseLong(raw.trim());
+            if (seconds >= 10) {
+                return seconds * 1000L;
+            }
+            log.warn("SENSOR_SAMPLE_SECONDS={} 过小，已回退到 120 秒", raw);
+        } catch (NumberFormatException e) {
+            log.warn("SENSOR_SAMPLE_SECONDS={} 不是有效数字，已回退到 120 秒", raw);
+        }
+        return 120_000L;
     }
 }

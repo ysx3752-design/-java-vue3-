@@ -38,6 +38,15 @@ export function getHistoryData(params) {
   })
 }
 
+// 获取时间段内的完整历史记录（不分页，用于趋势图）
+export function getHistoryRange(params) {
+  return request({
+    url: '/api/history/data',
+    method: 'get',
+    params
+  })
+}
+
 // 获取统计数据
 export function getStatistics(params) {
   return request({

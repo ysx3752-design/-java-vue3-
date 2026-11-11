@@ -1,5 +1,51 @@
 <template>
   <div class="alerts-management">
+    <!-- 实时监测：当前值与阈值规则对照 -->
+    <el-card class="box-card realtime-monitor-card">
+      <template #header>
+        <div class="card-header">
+          <span>实时监测</span>
+          <div class="live-meta">
+            <span class="live-dot" :class="{ stale: !monitorStore.isFresh }"></span>
+            <span class="live-text">{{ monitorStore.isFresh ? '实时采集中' : '等待数据' }}</span>
+            <el-tag size="small" :type="monitorStore.source === 'realtime' ? 'success' : 'info'" effect="plain">
+              {{ monitorStore.sourceLabel }}
+            </el-tag>
+            <span class="live-time">更新于 {{ monitorStore.shortLastUpdateTime }}</span>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="liveRules.length" class="live-rule-grid">
+        <div
+          v-for="rule in liveRules"
+          :key="rule.id || rule.name"
+          class="live-rule"
+          :class="{ 'is-triggered': rule.triggered, 'is-disabled': !rule.enabled }"
+        >
+          <div class="rule-top">
+            <span class="rule-name">{{ rule.name }}</span>
+            <el-tag
+              size="small"
+              :type="rule.triggered ? 'danger' : (rule.enabled ? 'success' : 'info')"
+            >
+              {{ rule.triggered ? '已触发' : (rule.enabled ? '正常' : '未启用') }}
+            </el-tag>
+          </div>
+          <div class="rule-body">
+            <div class="rule-value">
+              <span class="num">{{ rule.currentValue === null ? '--' : formatNumber(rule.currentValue) }}</span>
+              <span class="unit-text">{{ getUnitByType(rule.type) }}</span>
+            </div>
+            <div class="rule-threshold">
+              {{ getTypeName(rule.type) }} {{ rule.operator }} {{ rule.threshold }}{{ getUnitByType(rule.type) }}
+            </div>
+          </div>
+        </div>
+      </div>
+      <el-empty v-else description="暂未配置警报规则" :image-size="60" />
+    </el-card>
+
     <!-- 警报规则管理 -->
     <el-card class="box-card">
       <template #header>
@@ -70,7 +116,7 @@
       <template #header>
         <div class="card-header">
           <span>警报记录</span>
-          <el-button type="primary" @click="fetchAlertRecords">刷新</el-button>
+          <el-button type="primary" @click="fetchAlertRecords(false)">刷新</el-button>
         </div>
       </template>
 
@@ -160,11 +206,15 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onActivated, onDeactivated, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { alertsApi } from '@/api/alerts'
 import { useUserStore } from '@/store/user'
+import { useRealtimeFeed } from '@/composables/useRealtimeFeed'
 import AutoControlRules from '@/components/AutoControlRules.vue'
+
+// 实时传感器数据（每 5 秒刷新，页面切走自动暂停）
+const monitorStore = useRealtimeFeed(5000)
 
 // 获取用户存储
 const userStore = useUserStore()
@@ -179,9 +229,19 @@ const monitorTypes = [
   { label: 'CO2浓度', value: 'co2_level' }
 ]
 
+// 后端内置规则可能使用 air_temperature / air_humidity / co2_concentration 命名，
+// 与下拉框里的 temperature / humidity / co2_level 统一到同一套键名
+const TYPE_ALIASES = {
+  air_temperature: 'temperature',
+  air_humidity: 'humidity',
+  co2_concentration: 'co2_level'
+}
+
+const normalizeType = (type) => TYPE_ALIASES[type] || type
+
 // 获取类型名称
 const getTypeName = (type) => {
-  const found = monitorTypes.find(t => t.value === type)
+  const found = monitorTypes.find(t => t.value === normalizeType(type))
   return found ? found.label : type
 }
 
@@ -195,7 +255,7 @@ const getUnitByType = (type) => {
     light_intensity: 'lux',
     co2_level: 'ppm'
   }
-  return units[type] || ''
+  return units[normalizeType(type)] || ''
 }
 
 // 格式化时间
@@ -280,16 +340,43 @@ const fetchAlertRules = async () => {
 }
 
 // 获取警报记录
-const fetchAlertRecords = async () => {
-  recordsLoading.value = true
+const fetchAlertRecords = async (silent = false) => {
+  if (!silent) {
+    recordsLoading.value = true
+  }
   try {
     const res = await alertsApi.getRecentAlerts(20) // 获取最近20条记录
     alertRecords.value = res || []
   } catch (error) {
-    ElMessage.error('获取警报记录失败')
+    if (!silent) {
+      ElMessage.error('获取警报记录失败')
+    }
   } finally {
-    recordsLoading.value = false
+    if (!silent) {
+      recordsLoading.value = false
+    }
   }
+}
+
+// 当前值 vs 规则阈值的实时对照
+const liveRules = computed(() => {
+  return alertRules.value.map((rule) => {
+    const raw = Number(monitorStore.realTimeData[normalizeType(rule.type)])
+    const value = Number.isNaN(raw) ? null : raw
+    const threshold = Number(rule.threshold)
+    const triggered = Boolean(rule.enabled)
+      && value !== null
+      && !Number.isNaN(threshold)
+      && (rule.operator === '>' ? value > threshold : value < threshold)
+    return { ...rule, currentValue: value, triggered }
+  })
+})
+
+// 数值格式化：整数不显示小数位
+const formatNumber = (value) => {
+  const num = Number(value)
+  if (Number.isNaN(num)) return '--'
+  return Number.isInteger(num) ? String(num) : num.toFixed(1)
 }
 
 // 标记警报为已处理
@@ -471,11 +558,29 @@ const toggleAlert = async (row) => {
   }
 }
 
+// 警报记录自动刷新（静默，不闪加载态）
+let recordsTimer = null
+const startRecordsTimer = () => {
+  if (recordsTimer) return
+  recordsTimer = setInterval(() => fetchAlertRecords(true), 30000)
+}
+const stopRecordsTimer = () => {
+  if (recordsTimer) {
+    clearInterval(recordsTimer)
+    recordsTimer = null
+  }
+}
+
 // 在组件挂载时获取数据
-onMounted(() => {
-  fetchAlertRules()
-  fetchAlertRecords()
+onMounted(async () => {
+  await fetchAlertRules()
+  await fetchAlertRecords()
+  startRecordsTimer()
 })
+
+onActivated(startRecordsTimer)
+onDeactivated(stopRecordsTimer)
+onUnmounted(stopRecordsTimer)
 </script>
 
 <style scoped>
@@ -487,6 +592,128 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.realtime-monitor-card {
+  margin-bottom: 20px;
+}
+
+.live-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #8593a0;
+  font-weight: 400;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #52c41a;
+  animation: alerts-pulse 2s infinite;
+}
+
+.live-dot.stale {
+  background: #c0c4cc;
+  animation: none;
+  box-shadow: none;
+}
+
+@keyframes alerts-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(82, 196, 26, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(82, 196, 26, 0);
+  }
+}
+
+.live-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f3b45;
+}
+
+.live-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.live-rule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.live-rule {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #eaf0f4;
+  background: #f9fbfd;
+  transition: all 0.3s ease;
+
+  &.is-triggered {
+    border-color: #f5b9b8;
+    background: #fef6f6;
+  }
+
+  &.is-disabled {
+    opacity: 0.6;
+  }
+}
+
+.rule-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.rule-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f3b45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-body {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.rule-value {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+
+  .num {
+    font-size: 20px;
+    font-weight: 600;
+    color: #2f3b45;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .unit-text {
+    font-size: 11px;
+    color: #a3aeb8;
+  }
+}
+
+.is-triggered .rule-value .num {
+  color: #f56c6c;
+}
+
+.rule-threshold {
+  font-size: 12px;
+  color: #9aa7b2;
 }
 
 .alert-records-card {

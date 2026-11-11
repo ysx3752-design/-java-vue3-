@@ -5,7 +5,10 @@
         <div class="card-header">
           <div class="title-section">
             <span class="title">数据分析</span>
-            <span class="subtitle">显示最近24小时的数据</span>
+            <span class="subtitle">显示最近24小时的数据，按小时聚合</span>
+            <el-tag v-if="isDemoData" type="warning" size="small" effect="plain" class="demo-tag">
+              演示数据
+            </el-tag>
           </div>
           
           <!-- 添加右侧刷新按钮 -->
@@ -62,7 +65,7 @@
             <span>数据时间范围: {{ dataTimeRange }}</span>
           </div>
           <div class="summary-item">
-            <span>共 {{ chartData.length }} 条数据记录</span>
+            <span>共 {{ rawRecordCount }} 条采样记录，聚合为 {{ chartData.length }} 个曲线点</span>
           </div>
         </div>
       </div>
@@ -78,6 +81,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { historyApi } from '@/api/history'
 import { ensureArray, safeParseFloat, safeArrayOperation } from '@/utils/dataHelper'
+import { bucketSeries, generateDemoSeries } from '@/utils/chartSeries'
 
 const temperatureChart = ref(null)
 const humidityChart = ref(null)
@@ -86,6 +90,10 @@ const lightIntensityChart = ref(null)
 const loading = ref(false)
 const chartData = ref([])
 const dataLoaded = ref(false) // Track if data has been loaded
+// 无接口数据时为 true，界面会明确标注为演示数据
+const isDemoData = ref(false)
+// 原始记录条数（聚合前），用于在摘要里显示真实样本量
+const rawRecordCount = ref(0)
 const { proxy } = getCurrentInstance()
 
 // 添加数据缓存
@@ -140,6 +148,39 @@ const checkDomElements = () => {
   ]
   
   return elements.every(el => el && el.clientWidth > 0 && el.clientHeight > 0)
+}
+
+// 把一组曲线点渲染到四个图表上（真实数据与演示数据共用）
+const renderSeries = async (series) => {
+  // 强制销毁并重新创建所有图表
+  Object.values(charts).forEach(chart => {
+    if (chart) {
+      try {
+        chart.dispose()
+      } catch (e) {
+        console.warn('销毁图表出错:', e)
+      }
+    }
+  })
+
+  charts.temperature = null
+  charts.humidity = null
+  charts.soilMoisture = null
+  charts.lightIntensity = null
+
+  chartData.value = series
+  dataLoaded.value = true
+  // 必须先解除 loading：图表容器被 v-if="!loading && chartData.length>0" 控制，
+  // loading 为 true 时 DOM 根本不存在，initSimpleCharts 会直接返回
+  loading.value = false
+
+  await nextTick()
+  await nextTick()
+
+  initSimpleCharts()
+  await nextTick()
+
+  updateCharts(series)
 }
 
 // 优化数据获取逻辑
@@ -198,56 +239,33 @@ const fetchData = async () => {
     // 使用安全数组方法
     const data = ensureArray(response)
     console.log('处理后的数据数组:', data)
-    
+    rawRecordCount.value = data.length
+
     if (data.length > 0) {
+      // 按小时聚合成固定 24 个点再绘制：库里可能几百条记录，
+      // 逐点画会在采样密集处叠成一团，看不出趋势
+      const series = bucketSeries(data, { points: 24, hours: 24, end })
+      isDemoData.value = false
+
       // 更新缓存
-      chartDataCache.data = data
+      chartDataCache.data = series
       chartDataCache.lastFetched = Date.now()
-      
-      // 强制销毁并重新创建所有图表
-      Object.values(charts).forEach(chart => {
-        if (chart) {
-          try {
-            chart.dispose()
-          } catch (e) {
-            console.warn('销毁图表出错:', e)
-          }
-        }
-      })
-      
-      charts.temperature = null
-      charts.humidity = null
-      charts.soilMoisture = null
-      charts.lightIntensity = null
-      
-      // 更新图表数据
-      chartData.value = data
-      
-      // 确保DOM已更新，然后再初始化图表
-      await nextTick()
-      
-      // 使用简化的方法初始化
-      initSimpleCharts()
-      
-      // 延迟一点时间让图表完全初始化
-      setTimeout(() => {
-        // 更新图表
-        updateCharts(data)
-        
-        // 显示成功提示
-        ElMessage.success(`成功加载 ${data.length} 条数据`)
-      }, 200)
+
+      await renderSeries(series)
+      ElMessage.success(`成功加载 ${data.length} 条记录，按小时聚合为 ${series.length} 个点`)
     } else {
-      // 无真实数据时不生成模拟数据，仅提示
-      chartData.value = []
-      dataLoaded.value = true
-      ElMessage.info('该时间范围内暂无历史数据')
+      // 无接口数据时展示演示曲线，并在界面上明确标注
+      isDemoData.value = true
+      await renderSeries(generateDemoSeries({ points: 24, end }))
+      ElMessage.info('该时间范围内暂无历史数据，当前展示演示曲线')
     }
   } catch (error) {
     console.error('获取历史数据失败:', error)
-    chartData.value = []
-    dataLoaded.value = true
-    ElMessage.error('获取历史数据失败，请检查后端服务与硬件连接')
+    // 后端不可用时同样给出演示曲线，避免整页空白（界面有"演示数据"标识）
+    isDemoData.value = true
+    rawRecordCount.value = 0
+    await renderSeries(generateDemoSeries({ points: 24 }))
+    ElMessage.warning('获取历史数据失败，当前展示演示曲线，请检查后端服务与硬件连接')
   } finally {
     loading.value = false
   }
@@ -1466,6 +1484,10 @@ window.addEventListener('resize', () => {
 .title-section {
   display: flex;
   align-items: center;
+}
+
+.demo-tag {
+  margin-left: 10px;
 }
 
 .title {

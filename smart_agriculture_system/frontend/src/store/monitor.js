@@ -41,13 +41,33 @@ export const useMonitorStore = defineStore('monitor', {
     lastUpdateTime: null,
     loading: false,
     error: null,
-    updateInterval: null
+    updateInterval: null,
+    // 订阅式刷新的引用计数：多个页面同时监听时共用一个轮询
+    subscribers: 0,
+    // 数据来源（realtime = 虚拟仿真平台实时读取，cache/database = 回退数据）
+    source: ''
   }),
 
   getters: {
     formattedLastUpdateTime: (state) => {
       if (!state.lastUpdateTime) return '暂无数据'
       return new Date(state.lastUpdateTime).toLocaleString()
+    },
+    // 简化版时间，用于实时条上的紧凑显示
+    shortLastUpdateTime: (state) => {
+      if (!state.lastUpdateTime) return '--:--:--'
+      return new Date(state.lastUpdateTime).toLocaleTimeString('zh-CN', { hour12: false })
+    },
+    // 数据是否新鲜（15 秒内有更新）
+    isFresh: (state) => {
+      if (!state.lastUpdateTime) return false
+      return Date.now() - new Date(state.lastUpdateTime).getTime() < 15000
+    },
+    // 数据来源的中文描述
+    sourceLabel: (state) => {
+      if (state.source === 'realtime') return '虚拟仿真平台'
+      if (state.source === 'database' || state.source === 'cache') return '数据库缓存'
+      return state.source ? state.source : '未获取'
     }
   },
 
@@ -85,6 +105,7 @@ export const useMonitorStore = defineStore('monitor', {
         console.log("处理后的显示数据:", this.realTimeData)
         
         this.lastUpdateTime = new Date()
+        this.source = response.source || ''
         this.error = null
       } catch (error) {
         console.error('获取实时数据失败:', error)
@@ -154,6 +175,31 @@ export const useMonitorStore = defineStore('monitor', {
       this.updateInterval = setInterval(() => {
         this.fetchRealTimeData()
       }, interval)
+    },
+
+    /**
+     * 订阅实时数据（页面进入时调用）。
+     * 多个页面同时订阅只保留一个轮询定时器，间隔取调用方传入值。
+     */
+    acquireRealtime(interval = 5000) {
+      this.subscribers += 1
+      if (this.updateInterval) {
+        return
+      }
+      this.fetchRealTimeData()
+      this.updateInterval = setInterval(() => {
+        this.fetchRealTimeData()
+      }, interval)
+    },
+
+    /**
+     * 取消订阅（页面离开时调用），最后一个订阅者退出后停止轮询。
+     */
+    releaseRealtime() {
+      this.subscribers = Math.max(0, this.subscribers - 1)
+      if (this.subscribers === 0) {
+        this.stopRealTimeUpdate()
+      }
     },
 
     stopRealTimeUpdate() {

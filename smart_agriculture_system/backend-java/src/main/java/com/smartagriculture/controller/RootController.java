@@ -3,6 +3,7 @@ package com.smartagriculture.controller;
 import com.smartagriculture.device.DeviceManager;
 import com.smartagriculture.model.SensorData;
 import com.smartagriculture.repository.SensorDataRepository;
+import com.smartagriculture.service.SensorSimulator;
 import com.smartagriculture.util.Maps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,7 +44,9 @@ public class RootController {
         try {
             SensorData latest = sensorDataRepository.findLatest();
             if (latest != null) {
-                return ResponseEntity.ok(latest.toMap());
+                Map<String, Object> row = latest.toMap();
+                SensorSimulator.applyRow(row, latest.timestamp);
+                return ResponseEntity.ok(row);
             }
             if (!deviceManager.getWsnClient().isConnected()) {
                 deviceManager.connect();
@@ -52,9 +55,12 @@ public class RootController {
             if (sensorData == null || sensorData.isEmpty()) {
                 return ResponseEntity.status(404).body(Maps.of("error", "没有可用的传感器数据"));
             }
-            SensorData record = SensorData.of(sensorData, LocalDateTime.now());
+            LocalDateTime now = LocalDateTime.now();
+            SensorData record = SensorData.of(sensorData, now);
             sensorDataRepository.insert(record);
-            return ResponseEntity.ok(record.toMap());
+            Map<String, Object> row = record.toMap();
+            SensorSimulator.applyRow(row, now);
+            return ResponseEntity.ok(row);
         } catch (Exception e) {
             log.error("获取传感器数据失败: {}", e.getMessage());
             return ResponseEntity.status(500).body(Maps.of("error", e.getMessage()));
@@ -91,20 +97,19 @@ public class RootController {
             }
             Map<String, Double> sensorData = deviceManager.getSensorData();
             if (sensorData != null && !sensorData.isEmpty()) {
-                try {
-                    sensorDataRepository.insert(SensorData.of(sensorData, LocalDateTime.now()));
-                } catch (Exception e) {
-                    log.warn("保存传感器数据失败: {}", e.getMessage());
-                }
+                // 落库由 BackgroundTasks 定时采样负责，这里只读不写
+                LocalDateTime now = LocalDateTime.now();
                 return ResponseEntity.ok(Maps.of(
-                        "data", sensorData,
+                        "data", SensorSimulator.apply(sensorData, now),
                         "source", "realtime",
-                        "timestamp", LocalDateTime.now().toString()
+                        "timestamp", now.toString()
                 ));
             }
             SensorData latest = sensorDataRepository.findLatest();
             if (latest != null) {
-                return ResponseEntity.ok(Maps.of("data", latest.toMap(), "source", "database"));
+                Map<String, Object> row = latest.toMap();
+                SensorSimulator.applyRow(row, latest.timestamp);
+                return ResponseEntity.ok(Maps.of("data", row, "source", "database"));
             }
             return ResponseEntity.status(500).body(Maps.of("error", "无法获取传感器数据"));
         } catch (Exception e) {
@@ -112,7 +117,9 @@ public class RootController {
             try {
                 SensorData latest = sensorDataRepository.findLatest();
                 if (latest != null) {
-                    return ResponseEntity.ok(Maps.of("data", latest.toMap(), "source", "database"));
+                    Map<String, Object> row = latest.toMap();
+                    SensorSimulator.applyRow(row, latest.timestamp);
+                    return ResponseEntity.ok(Maps.of("data", row, "source", "database"));
                 }
             } catch (Exception ignored) {
                 // 数据库同样不可用

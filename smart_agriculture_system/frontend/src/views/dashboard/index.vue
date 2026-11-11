@@ -305,10 +305,17 @@ const loadDashboardData = async () => {
       try {
         const dashboardData = await getDashboardData()
         
-        // 更新传感器数据
+        // 更新传感器数据（接口返回 { data: {...}, source, timestamp }，字段在 data 里）
         if (dashboardData.sensorData && !dashboardData.error) {
-          temperature.value = parseFloat(dashboardData.sensorData.air_temperature || 25.6).toFixed(1)
-          humidity.value = parseFloat(dashboardData.sensorData.air_humidity || 65).toFixed(0)
+          const sensor = dashboardData.sensorData.data || dashboardData.sensorData
+          const tempValue = Number(sensor.air_temperature ?? sensor.temperature)
+          const humidityValue = Number(sensor.air_humidity ?? sensor.humidity)
+          if (!Number.isNaN(tempValue)) {
+            temperature.value = tempValue.toFixed(1)
+          }
+          if (!Number.isNaN(humidityValue)) {
+            humidity.value = humidityValue.toFixed(0)
+          }
         }
         
         // 更新设备状态
