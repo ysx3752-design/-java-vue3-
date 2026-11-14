@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { DEVICE_LABELS, deviceActionText } from '@/utils/devicePresentation'
 
 // 获取设备列表
 export function getDevices() {
@@ -88,24 +89,14 @@ export function disconnectDevice() {
 export function controlDevice(deviceType, action) {
   console.log('控制设备:', deviceType, action)
   
-  // 根据设备类型获取友好名称
-  const deviceNames = {
-    'external_fan': '外通风',
-    'internal_fan': '内通风',
-    'skylight': '天窗',
-    'spray': '喷灌',
-    'water_curtain': '水帘',
-    'light': '灯光'
-  };
-  
-  const deviceName = deviceNames[deviceType] || deviceType;
-  
-  // 将open/close转换为前端显示的开启/关闭文本
-  const actionText = action === 'open' ? '开启' : '关闭';
-  
+  const deviceName = DEVICE_LABELS[deviceType] || deviceType
+  const actionText = deviceActionText(deviceType, action)
+
   return request({
     url: '/api/device/control',
     method: 'post',
+    // 控制请求不自动重试，避免超时后重复下发硬件命令。
+    retry: 0,
     data: {
       device_type: deviceType,
       action: action
@@ -114,7 +105,7 @@ export function controlDevice(deviceType, action) {
     // 返回统一格式的响应
     return {
       success: response.success !== undefined ? response.success : true,
-      message: response.message || `设备 ${deviceName} ${actionText} 成功`,
+      message: response.success === false ? (response.message || `${deviceName}${actionText}失败`) : `${deviceName}${actionText}成功`,
       data: response
     };
   }).catch(error => {

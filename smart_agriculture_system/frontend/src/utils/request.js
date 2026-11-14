@@ -147,6 +147,7 @@ service.interceptors.response.use(
     }
   },
   async error => {
+    if (axios.isCancel(error)) return Promise.reject(error)
     const { config, response } = error
     
     // 如果配置了重试，并且是网络错误或5xx错误
