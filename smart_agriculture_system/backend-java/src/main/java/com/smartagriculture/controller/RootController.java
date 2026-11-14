@@ -49,7 +49,7 @@ public class RootController {
                 return ResponseEntity.ok(row);
             }
             if (!deviceManager.getWsnClient().isConnected()) {
-                deviceManager.connect();
+                deviceManager.requestConnectAsync();
             }
             Map<String, Double> sensorData = deviceManager.getSensorData();
             if (sensorData == null || sensorData.isEmpty()) {
@@ -93,7 +93,7 @@ public class RootController {
     public ResponseEntity<?> apiSensorData() {
         try {
             if (!deviceManager.getWsnClient().isConnected()) {
-                deviceManager.connect();
+                deviceManager.requestConnectAsync();
             }
             Map<String, Double> sensorData = deviceManager.getSensorData();
             if (sensorData != null && !sensorData.isEmpty()) {

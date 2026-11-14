@@ -176,11 +176,16 @@ service.interceptors.response.use(
     
     try {
       const userStore = useUserStore()
-      
+      // 轮询类/可降级接口可传 silent 或 noErrorNotification，避免后台抖动时反复弹全局错误提示
+      const silent = Boolean(config && (config.silent || config.noErrorNotification))
+      const notify = (message) => {
+        if (!silent) ElMessage.error(message)
+      }
+
       if (response) {
         switch (response.status) {
           case 401:
-            ElMessage.error('未授权或登录已过期，请重新登录')
+            notify('未授权或登录已过期，请重新登录')
             try {
               await userStore.logout()
             } catch (logoutError) {
@@ -191,35 +196,37 @@ service.interceptors.response.use(
             }
             break
           case 403:
-            ElMessage.error('没有权限访问')
+            notify('没有权限访问')
             break
           case 404:
-            ElMessage.error('请求的资源不存在')
+            notify('请求的资源不存在')
             break
           case 500:
-            ElMessage.error('服务器错误')
+            notify('服务器错误')
             break
           default:
             if (error.message?.includes('Network Error')) {
-              ElMessage.error('网络错误，请检查服务器是否运行')
+              notify('网络错误，请检查服务器是否运行')
             } else if (error.message?.includes('timeout')) {
-              ElMessage.error('请求超时，服务器响应时间过长')
+              notify('请求超时，服务器响应时间过长')
             } else {
-              ElMessage.error(response.data?.error || '未知错误')
+              notify(response.data?.error || '未知错误')
             }
         }
       } else {
         if (error.message?.includes('Network Error')) {
-          ElMessage.error('网络错误，请检查服务器是否运行')
+          notify('网络错误，请检查服务器是否运行')
         } else if (error.message?.includes('timeout')) {
-          ElMessage.error('请求超时，服务器响应时间过长')
+          notify('请求超时，服务器响应时间过长')
         } else {
-          ElMessage.error('网络错误，请检查您的网络连接')
+          notify('网络错误，请检查您的网络连接')
         }
       }
     } catch (handlerError) {
       console.error('错误处理时发生异常:', handlerError)
-      ElMessage.error('请求出错')
+      if (!(config && (config.silent || config.noErrorNotification))) {
+        ElMessage.error('请求出错')
+      }
     }
     
     if (response?.status === 401) {
