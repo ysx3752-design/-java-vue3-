@@ -55,13 +55,7 @@ export default defineConfig({
     // 启用源码映射以便于调试
     sourcemap: true,
     // 启用压缩以减小文件体积
-    minify: 'terser',
-    terserOptions: {
-      compress: {
-        drop_console: false,
-        drop_debugger: true
-      }
-    },
+    minify: 'esbuild',
     // 启用gzip压缩
     brotliSize: false
   },

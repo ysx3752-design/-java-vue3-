@@ -1,14 +1,20 @@
 <!-- 数字孪生三维视图容器 -->
 <template>
-  <div ref="viewportRef" class="twin-viewport" :class="{ 'is-fullscreen': isFullscreen }">
-    <div ref="canvasHostRef" class="twin-canvas"></div>
+  <div ref="viewportRef" class="twin-viewport" :class="{ 'is-fullscreen': isFullscreen, inspecting: !!activeItem }" @keydown.esc="closeInspector">
+    <div ref="canvasHostRef" class="twin-canvas" @pointerdown="closeInspector"></div>
 
     <!-- 顶部信息条 -->
     <div class="twin-status">
       <span class="status-dot" :class="{ online: connected }"></span>
       <span class="status-text">{{ connected ? '设备在线' : '设备离线' }}</span>
       <span class="divider"></span>
-      <span class="status-hint">实时映射</span>
+      <span class="status-hint">工程剖视</span>
+    </div>
+
+    <div class="scene-heading">
+      <span class="scene-eyebrow">GH—01 / DIGITAL TWIN</span>
+      <h3>温室工程剖视</h3>
+      <p>结构 · 环境 · 设备</p>
     </div>
 
     <!-- 右上工具栏 -->
@@ -41,15 +47,21 @@
       </button>
     </div>
 
-    <!-- 三维标注（位置由渲染循环实时计算） -->
+    <svg v-show="showLabels" class="label-leaders" aria-hidden="true">
+      <line v-for="item in labelList" :key="item.id" :ref="el => setLeaderRef(item.id, el)" />
+    </svg>
+    <!-- 标签避让详情卡，传感器与设备均支持直接操作。 -->
     <div v-show="showLabels" class="twin-labels">
-      <div
+      <button
         v-for="item in labelList"
         :key="item.id"
         :ref="(el) => setLabelRef(item.id, el)"
         class="twin-label"
-        :class="[item.kind, { clickable: !!item.deviceKey, active: item.active }]"
-        @click="item.deviceKey && emit('select', item.deviceKey)"
+        type="button"
+        :aria-label="`${item.title}：${item.kind === 'device' ? deviceStateText(item.deviceKey, devices[item.deviceKey]) : item.value}，${item.kind === 'device' ? '控制设备' : '查看历史'}`"
+        :aria-expanded="activeLabelId === item.id"
+        :class="[item.kind, { clickable: true, active: item.active, selected: activeLabelId === item.id }]"
+        @click="handleLabelClick(item)"
       >
         <template v-if="item.kind === 'sensor'">
           <span class="label-name">{{ item.title }}</span>
@@ -58,14 +70,19 @@
         <template v-else>
           <span class="label-dot" :class="{ on: item.active }"></span>
           <span class="label-name">{{ item.title }}</span>
-          <span class="label-state" :class="{ on: item.active }">{{ item.active ? '运行中' : '已停止' }}</span>
+          <span class="label-state" :class="{ on: item.active }">{{ deviceStateText(item.deviceKey, devices[item.deviceKey]) }}</span>
         </template>
-      </div>
+      </button>
+    </div>
+
+    <div v-if="activeItem" ref="inspectorHostRef" class="inspector-host">
+      <TwinInspector :item="activeItem" :environment="environment" :devices="devices" :connected="connected"
+        :pending="pending" :disabled="controlDisabled" @close="closeInspector" @control="(key, action) => emit('control', key, action)" />
     </div>
 
     <!-- 温度色标 -->
-    <div class="twin-legend">
-      <span class="legend-label">空气温度</span>
+    <div v-if="!activeItem" class="twin-legend">
+      <span class="legend-label">底座指示条 / 空气温度</span>
       <div class="legend-bar"></div>
       <div class="legend-scale">
         <span>低</span>
@@ -74,7 +91,9 @@
       </div>
     </div>
 
-    <div class="twin-hint">左键拖拽旋转 · 滚轮缩放 · 右键平移 · 点击标注定位</div>
+    <div class="twin-hint">拖拽旋转 · 滚轮缩放 · 点击标签控制设备 / 查看历史</div>
+
+    <div class="scene-note">剖切展示 · 模型比例示意</div>
 
     <!-- 加载 / 异常 -->
     <div v-if="!ready" class="twin-mask">
@@ -95,41 +114,39 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { RefreshRight, Aim, ScaleToOriginal, FullScreen, WarningFilled } from '@element-plus/icons-vue'
 import GreenhouseScene, { DEVICE_KEYS } from './greenhouseScene'
+import TwinInspector from './TwinInspector.vue'
+import { layoutLabels, positionInspector } from './labelLayout'
+import { DEVICE_LABELS, isDeviceOn, deviceStateText } from '@/utils/devicePresentation'
 
 const props = defineProps({
   environment: { type: Object, default: () => ({}) },
   devices: { type: Object, default: () => ({}) },
-  connected: { type: Boolean, default: false }
+  connected: { type: Boolean, default: false },
+  pending: { type: Object, default: () => ({}) },
+  controlDisabled: { type: Boolean, default: true }
 })
 
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select', 'control'])
 
+const activeLabelId = ref('')
+const activeItem = computed(() => labelList.value.find(item => item.id === activeLabelId.value))
+const inspectorHostRef = ref(null)
 const viewportRef = ref(null)
 const canvasHostRef = ref(null)
 const ready = ref(false)
 const error = ref('')
-const autoRotate = ref(true)
+const autoRotate = ref(false)
 const showLabels = ref(true)
 const isFullscreen = ref(false)
 
 let scene = null
+let disposed = false
 let frameTick = 0
 const labelEls = {}
+const leaderEls = {}
 const projection = { x: 0, y: 0, visible: false }
 
-const DEVICE_LABELS = {
-  external_fan: '外通风',
-  internal_fan: '内通风',
-  skylight: '天窗',
-  spray: '喷灌',
-  water_curtain: '水帘',
-  light: '补光灯'
-}
-
-const isOn = (key) => {
-  const v = props.devices?.[key]
-  return v === true || v === 1 || v === '1' || v === 'open' || v === 'active' || v === 'on'
-}
+const isOn = key => isDeviceOn(props.devices?.[key])
 
 const fmt = (value, digits = 0) => {
   const n = parseFloat(value)
@@ -168,6 +185,7 @@ const labelList = computed(() => {
       kind: 'device',
       title: DEVICE_LABELS[key],
       active: isOn(key),
+      unknown: props.devices?.[key] == null,
       deviceKey: key
     }))
   ]
@@ -181,48 +199,79 @@ const setLabelRef = (id, el) => {
   labelEls[id] = el
 }
 
+const setLeaderRef = (id, el) => {
+  if (el) leaderEls[id] = el
+  else delete leaderEls[id]
+}
+const closeInspector = () => {
+  activeLabelId.value = ''
+  if (scene) scene.selectedDevice = null
+}
+const handleLabelClick = item => {
+  if (activeLabelId.value === item.id) { closeInspector(); return }
+  activeLabelId.value = item.id
+  autoRotate.value = false
+  scene?.setAutoRotate(false)
+  if (item.deviceKey) {
+    scene?.focus(item.deviceKey)
+    emit('select', item.deviceKey)
+  }
+}
 const updateLabelPositions = () => {
   if (!scene || !showLabels.value) return
-  frameTick = (frameTick + 1) % 2
+  frameTick = (frameTick + 1) % 3
   if (frameTick) return
-
-  // 传感器标注优先展示，避免设备标注相互遮挡
-  const placed = []
-  const ordered = [...labelList.value].sort((a, b) => {
-    if (a.kind === b.kind) return 0
-    return a.kind === 'sensor' ? -1 : 1
-  })
-
-  for (const item of ordered) {
+  const reserved = []
+  const viewport = viewportRef.value
+  for (const el of [viewport.querySelector('.twin-status'), viewport.querySelector('.twin-toolbar'),
+    viewport.querySelector('.scene-heading'), viewport.querySelector('.twin-legend')]) {
+    if (!el || !el.offsetWidth || !el.offsetHeight) continue
+    reserved.push({ x: el.offsetLeft - 5, y: el.offsetTop - 5, width: el.offsetWidth + 10, height: el.offsetHeight + 10 })
+  }
+  reserved.push({ x: 0, y: viewport.clientHeight - 32, width: viewport.clientWidth, height: 32 })
+  const inspector = inspectorHostRef.value
+  const selectedAnchor = scene.anchors[activeLabelId.value]
+  if (inspector && selectedAnchor) {
+    scene.project(selectedAnchor, projection)
+    const rectangle = positionInspector(projection, viewport.clientWidth, viewport.clientHeight,
+      inspector.offsetWidth, inspector.offsetHeight, reserved)
+    inspector.style.left = `${rectangle.x}px`
+    inspector.style.top = `${rectangle.y}px`
+    inspector.style.right = 'auto'
+    inspector.style.bottom = 'auto'
+    reserved.push(rectangle)
+  }
+  const items = []
+  for (const item of labelList.value) {
     const el = labelEls[item.id]
     const anchor = scene.anchors[item.id]
     if (!el || !anchor) continue
     scene.project(anchor, projection)
-
-    if (!projection.visible) {
-      el.style.opacity = '0'
-      el.style.pointerEvents = 'none'
-      continue
-    }
-
-    const w = el.offsetWidth || 90
-    const h = el.offsetHeight || 20
-    const left = projection.x - w / 2
-    const top = projection.y - h
-    const overlap = placed.some(
-      (r) => left < r.right && left + w > r.left && top < r.bottom && top + h > r.top
-    )
-
-    if (overlap) {
-      el.style.opacity = '0'
-      el.style.pointerEvents = 'none'
-      continue
-    }
-
-    placed.push({ left, top, right: left + w, bottom: top + h })
+    el.style.visibility = 'hidden'
+    el.tabIndex = -1
+    if (leaderEls[item.id]) leaderEls[item.id].style.visibility = 'hidden'
+    if (!projection.visible) continue
+    items.push({ id: item.id, width: el.offsetWidth || 100, height: el.offsetHeight || 26,
+      anchorX: projection.x, anchorY: projection.y })
+  }
+  // 当前选中项先布局，剩余标签寻找不重叠位置，不再直接因碰撞而消失。
+  items.sort((a, b) => Number(b.id === activeLabelId.value) - Number(a.id === activeLabelId.value))
+  for (const item of layoutLabels(items, viewport.clientWidth, viewport.clientHeight, reserved)) {
+    if (!item.visible) continue
+    const el = labelEls[item.id]
+    el.style.visibility = 'visible'
     el.style.opacity = '1'
-    el.style.pointerEvents = item.deviceKey ? 'auto' : 'none'
-    el.style.transform = `translate3d(${projection.x}px, ${projection.y}px, 0) translate(-50%, -100%)`
+    el.style.pointerEvents = 'auto'
+    el.style.transform = `translate3d(${item.x}px, ${item.y}px, 0)`
+    el.tabIndex = 0
+    const line = leaderEls[item.id]
+    if (line) {
+      line.setAttribute('x1', item.anchorX)
+      line.setAttribute('y1', item.anchorY)
+      line.setAttribute('x2', item.x + item.width / 2)
+      line.setAttribute('y2', item.y + item.height)
+      line.style.visibility = 'visible'
+    }
   }
 }
 
@@ -233,9 +282,11 @@ const toggleAutoRotate = () => {
 
 const toggleLabels = () => {
   showLabels.value = !showLabels.value
+  if (!showLabels.value) closeInspector()
 }
 
 const resetView = () => {
+  closeInspector()
   if (scene) scene.resetView()
 }
 
@@ -259,6 +310,7 @@ const handleFullscreenChange = () => {
 }
 
 const focusDevice = (key) => {
+  activeLabelId.value = `device-${key}`
   if (scene) scene.focus(key)
   if (autoRotate.value) {
     autoRotate.value = false
@@ -269,6 +321,7 @@ defineExpose({ focus: focusDevice, resetView })
 
 onMounted(async () => {
   await nextTick()
+  if (disposed) return
   try {
     scene = new GreenhouseScene(canvasHostRef.value, {})
     scene.onFrame = updateLabelPositions
@@ -280,6 +333,10 @@ onMounted(async () => {
     scene.setAutoRotate(autoRotate.value)
     ready.value = true
   } catch (e) {
+    if (scene) {
+      scene.dispose()
+      scene = null
+    }
     console.error('[DigitalTwin] 初始化失败:', e)
     error.value = e?.message || '当前浏览器可能不支持 WebGL'
     ready.value = false
@@ -288,6 +345,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   document.removeEventListener('fullscreenchange', handleFullscreenChange)
   if (scene) {
     scene.dispose()
@@ -296,10 +354,14 @@ onBeforeUnmount(() => {
 })
 
 onActivated(() => {
-  if (scene) scene.resume()
+  if (scene) {
+    scene.resize()
+    scene.resume()
+  }
 })
 
 onDeactivated(() => {
+  closeInspector()
   if (scene) scene.pause()
 })
 
@@ -322,303 +384,94 @@ watch(
 
 <style lang="scss" scoped>
 .twin-viewport {
+  --ink: #30433d;
+  --muted: #78847d;
+  --accent: #3d7965;
   position: relative;
-  width: 100%;
-  height: 100%;
-  min-height: 420px;
-  border-radius: 14px;
-  overflow: hidden;
-  background:
-    radial-gradient(120% 90% at 70% 0%, #fbfdff 0%, #eaf3f9 42%, #dfeaf2 100%);
-  box-shadow: 0 10px 30px rgba(38, 66, 92, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.7);
-
-  &.is-fullscreen {
-    border-radius: 0;
-  }
+  width: 100%; height: 100%; min-height: 440px;
+  border: 1px solid #cbd2cc; border-radius: 4px; overflow: hidden;
+  background: radial-gradient(ellipse at 50% 38%, #f7f8f3 0%, #e8ebe5 65%, #dde3dc 100%);
+  box-sizing: border-box;
+  &.is-fullscreen { border-radius: 0; }
 }
-
-.twin-canvas {
-  position: absolute;
-  inset: 0;
+.twin-canvas { position: absolute; inset: 0; }
+.scene-heading {
+  position: absolute; top: 65px; left: 24px; pointer-events: none;
+  border-left: 3px solid var(--accent); padding-left: 12px;
+  .scene-eyebrow { font: 10px monospace; letter-spacing: 1.4px; color: var(--muted); }
+  h3 { margin: 6px 0; font-size: 20px; font-weight: 600; color: var(--ink); letter-spacing: 2px; }
+  p { margin: 0; font-size: 11px; color: var(--muted); letter-spacing: 3px; }
 }
-
 .twin-status {
-  position: absolute;
-  top: 14px;
-  left: 14px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 12px;
-  border-radius: 15px;
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(8px);
-  box-shadow: 0 2px 10px rgba(38, 66, 92, 0.1);
-  font-size: 12px;
-  color: #4a5a68;
-  pointer-events: none;
-
-  .status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #c0c4cc;
-    box-shadow: 0 0 0 3px rgba(192, 196, 204, 0.25);
-
-    &.online {
-      background: #67c23a;
-      box-shadow: 0 0 0 3px rgba(103, 194, 58, 0.2);
-      animation: twin-pulse 2s ease-in-out infinite;
-    }
-  }
-
-  .status-text {
-    font-weight: 600;
-    color: #303133;
-  }
-
-  .divider {
-    width: 1px;
-    height: 12px;
-    background: #dcdfe6;
-  }
-
-  .status-hint {
-    color: #8492a6;
-  }
+  position: absolute; top: 16px; left: 20px; display: flex; align-items: center; gap: 8px;
+  height: 26px; padding: 0 10px; border: 1px solid #cbd3cb; border-radius: 3px;
+  background: rgba(246,248,242,.94); font-size: 11px; color: var(--ink); pointer-events: none;
+  .status-dot { width: 6px; height: 6px; background: #9a9f98; border-radius: 1px; }
+  .status-dot.online { background: var(--accent); }
+  .divider { width: 1px; height: 11px; background: #c4ccc4; }
+  .status-hint { color: var(--muted); }
 }
-
 .twin-toolbar {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  display: flex;
-  gap: 6px;
-
+  position: absolute; top: 16px; right: 16px; display: flex; gap: 4px;
   .tool-btn {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    height: 30px;
-    padding: 0 10px;
-    border: none;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.82);
-    backdrop-filter: blur(8px);
-    box-shadow: 0 2px 10px rgba(38, 66, 92, 0.1);
-    color: #54646f;
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-
-    .el-icon {
-      font-size: 14px;
-      margin: 0;
-      width: auto;
-      height: auto;
-      filter: none;
-    }
-
-    &:hover {
-      color: #409eff;
-      background: #fff;
-      transform: translateY(-1px);
-    }
-
-    &.active {
-      color: #fff;
-      background: #409eff;
-      box-shadow: 0 4px 12px rgba(64, 158, 255, 0.35);
-    }
+    display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px;
+    border: 1px solid #cbd3cb; border-radius: 3px; background: rgba(246,248,242,.95);
+    color: #5b6c61; font-size: 11px; cursor: pointer; transition: background .2s;
+    .el-icon { font-size: 13px; margin: 0; width: auto; height: auto; filter: none; }
+    &:hover { background: #fff; color: var(--ink); border-color: #8b9e8f; }
+    &.active { background: #3b6657; color: #fff; border-color: #3b6657; }
   }
 }
-
-.twin-labels {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  overflow: hidden;
-}
-
+.inspector-host { position: absolute; right: 14px; bottom: 36px; width: 248px; max-width: calc(100% - 28px); z-index: 4; }
+.label-leaders { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+  line { stroke: #6f8d7a; stroke-width: 1; stroke-opacity: .55; visibility: hidden; } }
+.twin-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .twin-label {
-  position: absolute;
-  top: 0;
-  left: 0;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(214, 230, 240, 0.9);
-  box-shadow: 0 4px 14px rgba(38, 66, 92, 0.14);
-  font-size: 10.5px;
-  line-height: 1.3;
-  color: #4a5a68;
-  white-space: nowrap;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  will-change: transform;
-  pointer-events: none;
-
-  &.clickable {
-    cursor: pointer;
-
-    &:hover {
-      border-color: #a8d4ff;
-      box-shadow: 0 6px 18px rgba(64, 158, 255, 0.25);
-    }
-  }
-
-  &.sensor {
-    border-left: 3px solid #409eff;
-  }
-
-  &.device {
-    border-left: 3px solid #c8d2da;
-    background: rgba(252, 253, 254, 0.9);
-
-    &.active {
-      border-left-color: #67c23a;
-    }
-  }
-
-  .label-name {
-    color: #7c8b99;
-  }
-
-  .label-value {
-    font-weight: 700;
-    color: #2f3e4b;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .label-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #ccd4db;
-
-    &.on {
-      background: #67c23a;
-      box-shadow: 0 0 0 3px rgba(103, 194, 58, 0.18);
-    }
-  }
-
-  .label-state {
-    font-weight: 600;
-    color: #a0aab3;
-
-    &.on {
-      color: #4f9e2e;
-    }
-  }
+  position: absolute; top: 0; left: 0; display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px; border-radius: 2px; border: 1px solid #b9c6bc;
+  border-left: 3px solid #6d8679; background: rgba(248,250,245,.96);
+  box-shadow: 0 2px 4px rgba(40,55,42,.08); font-size: 10px; line-height: 1.4;
+  color: var(--ink); white-space: nowrap; opacity: 0; transition: opacity .15s; will-change: transform;
+  pointer-events: none; font-family: inherit;
+  &.selected { border-color: #3d7965; box-shadow: 0 0 0 1px #3d7965; }
+  &:focus-visible { outline: 2px solid #3d7965; outline-offset: 2px; }
+  &::after { content: ''; position: absolute; width: 1px; height: 8px; left: 50%; top: 100%; background: #7f9384; }
+  &.clickable { cursor: pointer; &:hover { background: #fff; border-color: #3d7965; } }
+  &.device { border-left-color: #96a19a; background: rgba(240,244,237,.96); }
+  &.device.active { border-left-color: #36785a; }
+  .label-name { color: #607265; }
+  .label-value { font: 600 11px monospace; color: #293f34; }
+  .label-dot { width: 5px; height: 5px; background: #a5afa5; border-radius: 1px; &.on { background: #36785a; } }
+  .label-state { font-size: 9px; color: #7d8a7e; &.on { color: #36785a; } }
 }
-
 .twin-legend {
-  position: absolute;
-  left: 16px;
-  bottom: 44px;
-  width: 148px;
-  padding: 8px 10px 6px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(8px);
-  box-shadow: 0 2px 10px rgba(38, 66, 92, 0.1);
-  pointer-events: none;
-
-  .legend-label {
-    display: block;
-    font-size: 11px;
-    color: #7c8b99;
-    margin-bottom: 5px;
-  }
-
-  .legend-bar {
-    height: 6px;
-    border-radius: 3px;
-    background: linear-gradient(90deg, #4a90e2 0%, #63c98a 50%, #f56c6c 100%);
-  }
-
-  .legend-scale {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 4px;
-    font-size: 10px;
-    color: #a0aab3;
-  }
+  position: absolute; left: 20px; bottom: 48px; width: 150px; padding: 10px;
+  border: 1px solid #cad3c7; border-radius: 3px; background: rgba(246,248,242,.9); pointer-events: none;
+  .legend-label { display: block; font-size: 10px; color: #657565; margin-bottom: 7px; }
+  .legend-bar { height: 4px; background: linear-gradient(90deg,#638cac,#588e78,#c17a5d); }
+  .legend-scale { display: flex; justify-content: space-between; margin-top: 5px; font-size: 9px; color: #7f8b7d; }
 }
-
-.twin-hint {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 14px;
-  text-align: center;
-  font-size: 11px;
-  color: #94a3af;
-  pointer-events: none;
-  letter-spacing: 0.2px;
-}
-
+.twin-hint { position: absolute; left: 20px; bottom: 15px; font-size: 10px; color: #72806f; pointer-events: none; }
+.scene-note { position: absolute; right: 18px; bottom: 15px; font-size: 10px; color: #7d8877; pointer-events: none; }
 .twin-mask {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  background: rgba(244, 249, 252, 0.92);
-  backdrop-filter: blur(2px);
-  color: #5b6b78;
-
-  .mask-icon {
-    font-size: 34px;
-    color: #f56c6c;
-    margin: 0;
-    width: auto;
-    height: auto;
-    filter: none;
-  }
-
-  .mask-spinner {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    border: 3px solid rgba(64, 158, 255, 0.2);
-    border-top-color: #409eff;
-    animation: twin-spin 0.9s linear infinite;
-  }
-
-  .mask-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: #3d4d5a;
-  }
-
-  .mask-desc {
-    font-size: 12px;
-    color: #8492a6;
-    max-width: 320px;
-    text-align: center;
-    line-height: 1.6;
-  }
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; background: rgba(237,241,232,.97); color: #52634f;
+  .mask-icon { font-size: 34px; color: #b76c51; width: auto; height: auto; margin: 0; filter: none; }
+  .mask-spinner { width: 26px; height: 26px; border: 2px solid #c8d1c4; border-top-color: #3d7965;
+    border-radius: 50%; animation: twin-spin .9s linear infinite; }
+  .mask-title { font-size: 13px; font-weight: 600; margin: 0; }
+  .mask-desc { font-size: 12px; max-width: 320px; text-align: center; line-height: 1.6; }
 }
+@media (max-width: 620px) {
+  .twin-toolbar { top: 52px; left: 20px; right: auto; }
+  .scene-heading { top: 100px; left: 20px; h3 { font-size: 16px; } p { display: none; } }
+  .scene-note { display: none; }
+  .twin-label { padding: 4px 5px; .label-value, .label-state { display: none; } }
+  .twin-viewport.inspecting .scene-heading { display: none; }
+  .inspector-host { width: 218px; right: 10px; }
 
-@keyframes twin-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  .twin-hint { font-size: 9px; }
+  .twin-legend { width: 125px; padding: 7px; }
 }
-
-@keyframes twin-pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 3px rgba(103, 194, 58, 0.2);
-  }
-  50% {
-    box-shadow: 0 0 0 6px rgba(103, 194, 58, 0.08);
-  }
-}
+@keyframes twin-spin { to { transform: rotate(360deg); } }
 </style>

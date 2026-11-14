@@ -17,8 +17,7 @@ const routes = [
       {
         path: 'twin',
         name: 'DigitalTwin',
-        component: () => import('@/views/twin/index.vue'),
-        meta: { title: '数字孪生', requiresAuth: true }
+        redirect: to => ({ path: '/control', query: { ...to.query, mode: 'twin' }, hash: to.hash })
       },
       {
         path: 'monitor',

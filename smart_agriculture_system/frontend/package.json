@@ -6,6 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test:device-control": "node --experimental-vm-modules --test tests/useDeviceControl.test.cjs",
+    "test:twin": "node --experimental-vm-modules --test tests/twin.test.cjs",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore"
   },
   "dependencies": {
@@ -29,4 +31,4 @@
     "sass": "^1.71.1",
     "vite": "^5.0.11"
   }
-} 
+}

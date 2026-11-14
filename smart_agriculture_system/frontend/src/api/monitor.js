@@ -39,10 +39,11 @@ export function getHistoryData(params) {
 }
 
 // 获取时间段内的完整历史记录（不分页，用于趋势图）
-export function getHistoryRange(params) {
+export function getHistoryRange(params, { signal } = {}) {
   return request({
     url: '/api/history/data',
     method: 'get',
+    signal,
     params
   })
 }
@@ -122,4 +123,4 @@ export function exportData(params) {
     params,
     responseType: 'blob'
   })
-} 
+}
