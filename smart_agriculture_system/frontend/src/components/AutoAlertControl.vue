@@ -1,1 +1,3 @@
-<!-- AutoAlertControl component -->
+<template>
+  <!-- AutoAlertControl component -->
+</template>
