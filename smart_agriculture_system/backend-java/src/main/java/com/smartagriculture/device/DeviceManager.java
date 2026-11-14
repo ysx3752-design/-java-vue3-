@@ -38,7 +38,11 @@ public class DeviceManager {
     private final AtomicBoolean connecting = new AtomicBoolean(false);
 
     public DeviceManager() {
-        this.wsnClient = new WsnClient(DeviceConfig.CONTROLLER_IP, DeviceConfig.CONTROLLER_PORT);
+        this(new WsnClient(DeviceConfig.CONTROLLER_IP, DeviceConfig.CONTROLLER_PORT));
+    }
+
+    DeviceManager(WsnClient wsnClient) {
+        this.wsnClient = wsnClient;
         initDeviceStatus();
     }
 
@@ -144,8 +148,17 @@ public class DeviceManager {
             log.error("未知的设备类型: {}", deviceType);
             return false;
         }
+        if (!"open".equalsIgnoreCase(action) && !"close".equalsIgnoreCase(action)) {
+            log.error("无效的设备操作: {}", action);
+            return false;
+        }
         if (!wsnClient.isConnected() && !wsnClient.connect()) {
             log.error("设备管理器未连接，无法控制设备");
+            return false;
+        }
+        boolean result = wsnClient.sendCommand(deviceType, action);
+        if (!result) {
+            log.error("设备 {} 执行 {} 操作失败", deviceType, action);
             return false;
         }
         int status = "open".equalsIgnoreCase(action) ? 1 : 0;
@@ -154,10 +167,6 @@ public class DeviceManager {
             if (info != null) {
                 info.put("status", status);
             }
-        }
-        boolean result = wsnClient.sendCommand(deviceType, action);
-        if (!result) {
-            log.error("设备 {} 执行 {} 操作失败", deviceType, action);
         }
         return true;
     }

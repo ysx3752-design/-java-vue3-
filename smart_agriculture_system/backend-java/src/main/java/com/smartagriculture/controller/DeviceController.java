@@ -103,7 +103,9 @@ public class DeviceController {
 
             int status = "open".equals(action) ? 1 : 0;
             try {
-                deviceStatusRepository.upsert(deviceType, status);
+                if (success) {
+                    deviceStatusRepository.upsert(deviceType, status);
+                }
                 OperationLog operationLog = new OperationLog();
                 operationLog.user_id = 0;
                 operationLog.operation_type = action;

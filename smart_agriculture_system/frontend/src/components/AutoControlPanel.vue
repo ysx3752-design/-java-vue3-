@@ -89,8 +89,8 @@
         </div>
       </div>
     </div>
-  </div>
-</template>    <div class="threshold-settings">
+
+    <div class="threshold-settings">
       <!-- 土壤湿度阈值设置 -->
       <div class="threshold-card">
         <div class="threshold-header">
@@ -169,7 +169,9 @@
       </div>
     </div>
   </div>
-</template><script setup>
+</template>
+
+<script setup>
 import { ref, onMounted, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
@@ -268,7 +270,9 @@ const updateSoilTempThreshold = (values) => updateThreshold('soil_temperature', 
 const updateSoilMoistureThreshold = (values) => updateThreshold('soil_moisture', values)
 const updateLightThreshold = (values) => updateThreshold('light_intensity', values)
 const updateCO2Threshold = (values) => updateThreshold('co2_concentration', values)
-</script><style scoped>
+</script>
+
+<style scoped>
 .auto-control-panel {
   background-color: #fff;
   border-radius: 8px;
