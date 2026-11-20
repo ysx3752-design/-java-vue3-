@@ -10,9 +10,12 @@
         <span v-if="pending[item.deviceKey]" class="subtle">指令执行中…</span>
       </div>
       <div class="actions">
-        <button v-for="action in ['open', 'close']" :key="action" :class="{ primary: action === 'open' }"
-          :disabled="disabled || devices[item.deviceKey] == null || isDeviceOn(devices[item.deviceKey]) === (action === 'open')"
-          @click="emit('control', item.deviceKey, action)">{{ deviceActionText(item.deviceKey, action) }}</button>
+        <button :class="{ primary: !isDeviceOn(devices[item.deviceKey]) }"
+          :aria-busy="Boolean(pending[item.deviceKey])"
+          :disabled="disabled || !connected || Boolean(pending[item.deviceKey]) || devices[item.deviceKey] == null"
+          @click="emit('control', item.deviceKey, deviceNextAction(devices[item.deviceKey]))">
+          {{ pending[item.deviceKey] ? '执行中…' : devices[item.deviceKey] == null ? '状态未知' : deviceActionText(item.deviceKey, deviceNextAction(devices[item.deviceKey])) }}
+        </button>
       </div>
       <p class="subtle">{{ !connected ? '控制器离线，暂不可操作' : disabled ? '正在同步状态或执行操作，请稍候' : '操作结果由控制器接口返回' }}</p>
     </template>
@@ -45,7 +48,7 @@
 <script setup>
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { getHistoryRange } from '@/api/monitor'
-import { isDeviceOn, deviceStateText, deviceActionText } from '@/utils/devicePresentation'
+import { isDeviceOn, deviceStateText, deviceActionText, deviceNextAction } from '@/utils/devicePresentation'
 
 const props = defineProps({
   item: { type: Object, required: true }, environment: { type: Object, required: true },

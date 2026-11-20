@@ -13,3 +13,5 @@ export function deviceActionText(key, action) {
   if (key === 'external_shade' || key === 'internal_shade') return action === 'open' ? '展开' : '收起'
   return action === 'open' ? '开启' : '关闭'
 }
+
+export const deviceNextAction = value => isDeviceOn(value) ? 'close' : 'open'

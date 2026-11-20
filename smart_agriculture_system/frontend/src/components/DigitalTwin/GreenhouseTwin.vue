@@ -1,7 +1,7 @@
 <!-- 数字孪生三维视图容器 -->
 <template>
   <div ref="viewportRef" class="twin-viewport" :class="{ 'is-fullscreen': isFullscreen, inspecting: !!activeItem }" @keydown.esc="closeInspector">
-    <div ref="canvasHostRef" class="twin-canvas" @pointerdown="closeInspector"></div>
+    <div ref="canvasHostRef" class="twin-canvas" @pointerdown="closeInspector" @wheel.passive="closeInspector"></div>
 
     <!-- 顶部信息条 -->
     <div class="twin-status">
@@ -141,9 +141,9 @@ const isFullscreen = ref(false)
 
 let scene = null
 let disposed = false
-let frameTick = 0
 const labelEls = {}
 const leaderEls = {}
+const labelOffsets = new Map()
 const projection = { x: 0, y: 0, visible: false }
 
 const isOn = key => isDeviceOn(props.devices?.[key])
@@ -219,22 +219,18 @@ const handleLabelClick = item => {
 }
 const updateLabelPositions = () => {
   if (!scene || !showLabels.value) return
-  frameTick = (frameTick + 1) % 3
-  if (frameTick) return
-  const reserved = []
+  // 固定每个标签相对锚点的偏移；拖动时跟随设备，不重新寻找位置。
   const viewport = viewportRef.value
-  for (const el of [viewport.querySelector('.twin-status'), viewport.querySelector('.twin-toolbar'),
-    viewport.querySelector('.scene-heading'), viewport.querySelector('.twin-legend')]) {
-    if (!el || !el.offsetWidth || !el.offsetHeight) continue
-    reserved.push({ x: el.offsetLeft - 5, y: el.offsetTop - 5, width: el.offsetWidth + 10, height: el.offsetHeight + 10 })
+  const reserved = []
+  for (const el of [viewport.querySelector('.twin-toolbar'), viewport.querySelector('.twin-status'), viewport.querySelector('.scene-heading'), viewport.querySelector('.twin-legend')]) {
+    if (el?.offsetWidth && el.offsetHeight) reserved.push({ x: el.offsetLeft, y: el.offsetTop, width: el.offsetWidth, height: el.offsetHeight })
   }
-  reserved.push({ x: 0, y: viewport.clientHeight - 32, width: viewport.clientWidth, height: 32 })
   const inspector = inspectorHostRef.value
   const selectedAnchor = scene.anchors[activeLabelId.value]
   if (inspector && selectedAnchor) {
     scene.project(selectedAnchor, projection)
     const rectangle = positionInspector(projection, viewport.clientWidth, viewport.clientHeight,
-      inspector.offsetWidth, inspector.offsetHeight, reserved)
+      inspector.offsetWidth, inspector.offsetHeight)
     inspector.style.left = `${rectangle.x}px`
     inspector.style.top = `${rectangle.y}px`
     inspector.style.right = 'auto'
@@ -251,12 +247,16 @@ const updateLabelPositions = () => {
     el.tabIndex = -1
     if (leaderEls[item.id]) leaderEls[item.id].style.visibility = 'hidden'
     if (!projection.visible) continue
-    items.push({ id: item.id, width: el.offsetWidth || 100, height: el.offsetHeight || 26,
+    items.push({ id: item.id, slot: labelList.value.indexOf(item), width: el.offsetWidth || 100, height: el.offsetHeight || 26,
       anchorX: projection.x, anchorY: projection.y })
   }
-  // 当前选中项先布局，剩余标签寻找不重叠位置，不再直接因碰撞而消失。
-  items.sort((a, b) => Number(b.id === activeLabelId.value) - Number(a.id === activeLabelId.value))
-  for (const item of layoutLabels(items, viewport.clientWidth, viewport.clientHeight, reserved)) {
+  const context = `${viewport.clientWidth}:${viewport.clientHeight}:${inspector ? inspector.offsetHeight : 0}`
+  if (!labelOffsets.has(context)) {
+    // 视口改变时释放旧尺寸缓存；弹层开关只各布局一次。
+    if (labelOffsets.size > 8) labelOffsets.clear()
+    labelOffsets.set(context, new Map())
+  }
+  for (const item of layoutLabels(items, viewport.clientWidth, viewport.clientHeight, reserved, labelOffsets.get(context))) {
     if (!item.visible) continue
     const el = labelEls[item.id]
     el.style.visibility = 'visible'
@@ -388,7 +388,7 @@ watch(
   --muted: #78847d;
   --accent: #3d7965;
   position: relative;
-  width: 100%; height: 100%; min-height: 440px;
+  width: 100%; height: 100%; min-height: 640px;
   border: 1px solid #cbd2cc; border-radius: 4px; overflow: hidden;
   background: radial-gradient(ellipse at 50% 38%, #f7f8f3 0%, #e8ebe5 65%, #dde3dc 100%);
   box-sizing: border-box;
@@ -432,14 +432,15 @@ watch(
   border-left: 3px solid #6d8679; background: rgba(248,250,245,.96);
   box-shadow: 0 2px 4px rgba(40,55,42,.08); font-size: 10px; line-height: 1.4;
   color: var(--ink); white-space: nowrap; opacity: 0; transition: opacity .15s; will-change: transform;
-  pointer-events: none; font-family: inherit;
+  pointer-events: none; font-family: inherit; max-width: calc(50% - 20px); box-sizing: border-box;
+  &:hover, &:focus-visible { z-index: 3; }
   &.selected { border-color: #3d7965; box-shadow: 0 0 0 1px #3d7965; }
   &:focus-visible { outline: 2px solid #3d7965; outline-offset: 2px; }
   &::after { content: ''; position: absolute; width: 1px; height: 8px; left: 50%; top: 100%; background: #7f9384; }
   &.clickable { cursor: pointer; &:hover { background: #fff; border-color: #3d7965; } }
   &.device { border-left-color: #96a19a; background: rgba(240,244,237,.96); }
   &.device.active { border-left-color: #36785a; }
-  .label-name { color: #607265; }
+  .label-name { overflow: hidden; text-overflow: ellipsis; color: #607265; }
   .label-value { font: 600 11px monospace; color: #293f34; }
   .label-dot { width: 5px; height: 5px; background: #a5afa5; border-radius: 1px; &.on { background: #36785a; } }
   .label-state { font-size: 9px; color: #7d8a7e; &.on { color: #36785a; } }
@@ -466,7 +467,9 @@ watch(
   .twin-toolbar { top: 52px; left: 20px; right: auto; }
   .scene-heading { top: 100px; left: 20px; h3 { font-size: 16px; } p { display: none; } }
   .scene-note { display: none; }
-  .twin-label { padding: 4px 5px; .label-value, .label-state { display: none; } }
+  .twin-label { padding: 4px 5px; .label-state { display: none; } }
+  .twin-label.sensor { flex-wrap: wrap; gap: 2px 5px; }
+  .twin-label.sensor .label-value { display: block; width: 100%; }
   .twin-viewport.inspecting .scene-heading { display: none; }
   .inspector-host { width: 218px; right: 10px; }
 

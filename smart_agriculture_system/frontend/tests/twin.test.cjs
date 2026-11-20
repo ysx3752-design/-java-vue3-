@@ -58,11 +58,11 @@ test('both shading devices have independent geometry and deployment animations',
   assert.ok(scene.shades.find(s => s.key === 'external_shade').moving.scale.z < .05)
 })
 
-test('dense labels stay inside the viewport and avoid the inspector and each other', async () => {
+test('initial anchored layout avoids other labels and the inspector', async () => {
   const { layoutLabels } = await loadModule('../src/components/DigitalTwin/labelLayout.js')
   const cases = [
     { width: 900, height: 640, labelWidth: 160, reserved: [{ x: 638, y: 374, width: 248, height: 230 }] },
-    { width: 352, height: 440, labelWidth: 70, reserved: [{ x: 0, y: 0, width: 352, height: 90 }, { x: 124, y: 174, width: 218, height: 230 }] }
+    { width: 352, height: 640, labelWidth: 70, reserved: [{ x: 0, y: 0, width: 352, height: 90 }, { x: 67, y: 374, width: 218, height: 230 }] }
   ]
   for (const { width, height, labelWidth, reserved } of cases) {
     const items = Array.from({ length: 12 }, (_, i) => ({ id: i, anchorX: width / 2, anchorY: height / 2, width: labelWidth, height: 26 }))
@@ -96,4 +96,33 @@ test('inspector stays within the scene and avoids reserved toolbar areas near vi
     assert.ok(card.x >= 0 && card.x + card.width <= 352)
     assert.ok(card.y >= 90 && card.y + card.height <= 440 - 32)
   }
+})
+
+
+test('labels follow their own anchors without exchanging offsets during camera motion', async () => {
+  const { layoutLabels, positionInspector } = await loadModule('../src/components/DigitalTwin/labelLayout.js')
+  const offsets = new Map()
+  const items = Array.from({ length: 4 }, (_, id) => ({ id, width: 100, height: 26,
+    anchorX: 300 + id % 2 * 180, anchorY: 240 + Math.floor(id / 2) * 100 }))
+  const original = layoutLabels(items, 900, 640, [], offsets)
+  const moved = layoutLabels(items.map(item => ({ ...item, anchorX: item.anchorX + 10, anchorY: item.anchorY + 20 })).reverse(), 900, 640, [], offsets)
+  for (const item of original) {
+    const next = moved.find(other => other.id === item.id)
+    assert.equal(next.x, item.x + 10); assert.equal(next.y, item.y + 20)
+    assert.ok(Math.abs(next.x - next.anchorX) < 120)
+  }
+  assert.equal(offsets.size, 4)
+  const card = positionInspector({ x: 1, y: 1 }, 900, 640, 248, 230)
+  assert.equal(card.x, positionInspector({ x: 899, y: 600 }, 900, 640, 248, 230).x)
+})
+
+
+test('single control button always offers the opposite action after status changes', async () => {
+  const { deviceNextAction, deviceActionText } = await loadModule('../src/utils/devicePresentation.js')
+  assert.equal(deviceActionText('skylight', deviceNextAction(0)), '开启')
+  assert.equal(deviceActionText('skylight', deviceNextAction(1)), '关闭')
+  assert.equal(deviceActionText('external_shade', deviceNextAction(0)), '展开')
+  assert.equal(deviceActionText('external_shade', deviceNextAction(1)), '收起')
+  for (const value of [1, '1', true, 'open', 'active', 'on']) assert.equal(deviceNextAction(value), 'close')
+  for (const value of [0, '0', false, 'close', 'inactive', 'off']) assert.equal(deviceNextAction(value), 'open')
 })
