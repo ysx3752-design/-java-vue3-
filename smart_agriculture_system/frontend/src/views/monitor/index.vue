@@ -142,7 +142,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, computed, nextTick, watch } from 'vue'
 import { getHistoryData, getHistoryRange } from '@/api/monitor'
 import { useRealtimeFeed } from '@/composables/useRealtimeFeed'
 import { bucketSeries } from '@/utils/chartSeries'
@@ -353,26 +353,42 @@ const handleCurrentChange = (val) => {
   fetchHistoryData()
 }
 
+// 请求序号：连续快速切换指标/日期时，只让最后一次请求的结果落地，
+// 避免先发后到的旧响应把新曲线覆盖掉
+let fetchSeq = 0
+
 // 获取历史数据
 const fetchHistoryData = async () => {
   if (!dateRange.value || dateRange.value.length !== 2) {
     ElMessage.warning('请选择日期范围')
     return
   }
-  
+
+  const seq = ++fetchSeq
+
   try {
     // 显示加载状态
     monitorStore.loading = true
-    
+
+    // el-date-picker 的 daterange 两端都是当天 00:00，
+    // 原样传给后端会把结束日一整天排除在外（选 11.9–11.10 实际只查 11.9），
+    // 因此把结束时间补到当天最后一毫秒。
+    const rangeStart = new Date(dateRange.value[0])
+    const rangeEnd = new Date(dateRange.value[1])
+    rangeEnd.setHours(23, 59, 59, 999)
+
     // 直接使用API中的getHistoryData
     const response = await getHistoryData({
-      start_time: dateRange.value[0].toISOString(),
-      end_time: dateRange.value[1].toISOString(),
+      start_time: rangeStart.toISOString(),
+      end_time: rangeEnd.toISOString(),
       metric: selectedMetric.value,
       page: currentPage.value,
       page_size: pageSize.value
     })
     
+    // 期间又发起了新查询，本次结果已过期，直接丢弃
+    if (seq !== fetchSeq) return
+
     if (response && response.data) {
       // 后端返回的是分页数据
       monitorStore.historyData = Array.isArray(response.data) ? response.data : (response.data.items || [])
@@ -391,14 +407,17 @@ const fetchHistoryData = async () => {
     // 趋势图单独取完整区间数据（不跟着表格分页走），再按时间段聚合
     try {
       const rangeResponse = await getHistoryRange({
-        start_date: dateRange.value[0].toISOString(),
-        end_date: dateRange.value[1].toISOString()
+        start_date: rangeStart.toISOString(),
+        end_date: rangeEnd.toISOString(),
+        metric: selectedMetric.value
       })
+      // 旧请求晚到，丢弃，避免覆盖最新一次查询的曲线
+      if (seq !== fetchSeq) return
       const rows = Array.isArray(rangeResponse) ? rangeResponse : (rangeResponse?.data || [])
-      const hours = Math.max(1, (dateRange.value[1] - dateRange.value[0]) / 3600000)
+      const hours = Math.max(1, (rangeEnd - rangeStart) / 3600000)
       // 24 小时显示 24 个点，时间跨度越大适当增加，上限 72 个避免过密
       const points = Math.min(72, Math.max(24, Math.round(hours)))
-      chartSeries.value = bucketSeries(rows, { points, hours, end: dateRange.value[1] })
+      chartSeries.value = bucketSeries(rows, { points, hours, end: rangeEnd })
     } catch (rangeError) {
       console.warn('获取区间历史数据失败，趋势图退回当前页数据:', rangeError)
       chartSeries.value = monitorStore.historyData
@@ -416,94 +435,115 @@ const fetchHistoryData = async () => {
     monitorStore.historyData = []
     chartSeries.value = []
     total.value = 0
+    // 请求失败时同样清掉旧曲线：
+    // 否则画布停留在上一次查询结果上，用户会以为"日期选了没反应"。
+    if (chartInstance) {
+      chartInstance.clear()
+      chartInstance.setOption({
+        title: {
+          text: '历史数据加载失败',
+          subtext: '请稍后重试，或检查后端服务是否正常',
+          left: 'center',
+          top: 'center',
+          textStyle: { color: '#f56c6c', fontSize: 16, fontWeight: 'normal' },
+          subtextStyle: { color: '#b6bcc4', fontSize: 12 }
+        }
+      }, true)
+    }
   } finally {
-    monitorStore.loading = false
+    // 只由最后一次请求收起加载态，避免旧请求提前把遮罩关掉
+    if (seq === fetchSeq) {
+      monitorStore.loading = false
+    }
   }
+}
+
+// 确保图表实例与当前容器一致：
+// DOM 变了就重建，绝不让实例继续画在已脱离文档的节点上。
+const ensureChartInstance = () => {
+  const el = historyChart.value
+  if (!el) return null
+  if (chartInstance && typeof chartInstance.getDom === 'function' && chartInstance.getDom() !== el) {
+    console.warn('图表实例与当前容器不一致，重建实例')
+    try {
+      chartInstance.dispose()
+    } catch (e) {
+      console.warn('销毁旧图表实例失败:', e)
+    }
+    chartInstance = null
+  }
+  if (!chartInstance) {
+    try {
+      chartInstance = echarts.init(el)
+    } catch (error) {
+      console.error('图表初始化失败:', error)
+      return null
+    }
+  }
+  chartInitialized.value = true
+  return chartInstance
 }
 
 // 更新图表
 const updateChart = () => {
-  if (!historyChart.value) {
-    console.warn('图表DOM元素不存在')
-    return
-  }
-  
   // 使用nextTick确保DOM已更新
   nextTick(() => {
     try {
-      // 图表实例绑定的 DOM 与当前 ref 不一致时（热更新、keep-alive 重建等），
-      // 旧实例会一直画在已脱离文档的 canvas 上，表现为"换了指标但图不变"
-      if (chartInstance && typeof chartInstance.getDom === 'function'
-          && chartInstance.getDom() !== historyChart.value) {
-        console.warn('图表实例与当前容器不一致，重新初始化')
-        try {
-          chartInstance.dispose()
-        } catch (e) {
-          console.warn('销毁旧图表实例失败:', e)
-        }
-        chartInstance = null
-        chartInitialized.value = false
+      const el = historyChart.value
+      if (!el) {
+        console.warn('图表DOM元素不存在')
+        return
       }
 
-      // 确保图表实例正确初始化
-      if (!chartInstance) {
-        try {
-          // 延迟初始化以确保DOM元素已准备好
-          chartInstance = echarts.init(historyChart.value)
-          chartInitialized.value = true
-        } catch (error) {
-          console.error('图表初始化失败:', error)
-          chartInitialized.value = false
-          return
-        }
-      } else {
-        try {
-          // 检查DOM元素是否仍然存在
-          if (!document.body.contains(historyChart.value)) {
-            console.warn('图表DOM元素已从文档中移除')
-            chartInitialized.value = false
-            return
-          }
-          
-          // 尝试调整大小以避免渲染问题
-          if (chartInstance && chartInstance.resize && typeof chartInstance.resize === 'function') {
-            chartInstance.resize()
-          }
-        } catch (error) {
-          console.warn('图表调整大小失败:', error)
-          // 如果调整大小失败，尝试重新初始化
-          try {
-            chartInstance.dispose()
-            if (historyChart.value) {
-              chartInstance = echarts.init(historyChart.value)
-              chartInitialized.value = true
-            } else {
-              console.warn('图表DOM元素不存在，无法重新初始化')
-              chartInitialized.value = false
-              return
+      // 容器还没布局出尺寸时不要初始化/绘制。
+      // ECharts 一旦以 0×0 初始化，后续 resize 也救不回来，
+      // 表现为"刷新后第一次能用，之后怎么点都不动"。
+      if (el.clientWidth === 0 || el.clientHeight === 0) {
+        setTimeout(() => {
+          if (historyChart.value && historyChart.value.clientWidth > 0) {
+            try {
+              chartInstance && chartInstance.resize()
+            } catch (e) {
+              /* 尺寸恢复后重画即可，忽略 */
             }
-          } catch (reinitError) {
-            console.error('图表重新初始化失败:', reinitError)
-            chartInitialized.value = false
-            return
+            updateChart()
           }
-        }
+        }, 150)
+        return
+      }
+
+      const instance = ensureChartInstance()
+      if (!instance) return
+      try {
+        instance.resize()
+      } catch (e) {
+        console.warn('图表调整大小失败:', e)
       }
       
       // 趋势图使用聚合后的完整区间数据
       if (!Array.isArray(chartSeries.value) || chartSeries.value.length === 0) {
-        console.warn('历史数据为空或不是数组，不更新图表')
+        // 必须 clear + notMerge：setOption 默认是合并模式，
+        // 只改 title 会让上一次查询的 series 留在画布上，
+        // 表现为"日期改了、曲线还是旧的"。
+        console.warn('所选区间无数据，清空图表避免残留旧曲线')
+        chartInstance.clear()
         chartInstance.setOption({
           title: {
-            text: '暂无数据',
+            text: '所选时间段暂无数据',
+            subtext: '数据库中没有该区间的采样记录，请调整日期范围',
             left: 'center',
             top: 'center',
             textStyle: {
-              color: '#999',
-              fontSize: 16
+              color: '#909399',
+              fontSize: 16,
+              fontWeight: 'normal'
+            },
+            subtextStyle: {
+              color: '#b6bcc4',
+              fontSize: 12
             }
           }
-        })
+        }, true)
         return
       }
 
@@ -568,21 +608,19 @@ const updateChart = () => {
 
       if (!data || data.length === 0) {
         console.warn('处理后的历史数据为空，显示无数据提示')
-        
-        // 确保图表实例存在
+
+        // 用 notMerge 覆盖，避免上一次的 series 残留在画布上
         if (chartInstance) {
-          chartInstance.clear();
           chartInstance.setOption({
             title: {
-              text: '暂无有效数据',
+              text: '所选时间段暂无数据',
+              subtext: '该指标在此区间没有有效采样值',
               left: 'center',
               top: 'center',
-              textStyle: {
-                color: '#999',
-                fontSize: 16
-              }
+              textStyle: { color: '#909399', fontSize: 16, fontWeight: 'normal' },
+              subtextStyle: { color: '#b6bcc4', fontSize: 12 }
             }
-          })
+          }, true)
         }
         return
       }
@@ -593,8 +631,8 @@ const updateChart = () => {
 
       // 设置图表配置
       try {
-        // 再次检查图表实例和DOM元素
-        if (!chartInstance || !historyChart.value || !document.body.contains(historyChart.value)) {
+        // 实例已在本次调用开头确保过，这里只做兜底
+        if (!chartInstance || !historyChart.value) {
           console.warn('图表实例或DOM元素不存在，无法更新图表')
           return
         }
@@ -867,6 +905,33 @@ onMounted(async () => {
     console.error('组件挂载时出错:', error)
     ElMessage.error('加载数据失败，请刷新页面重试')
   }
+})
+
+// keep-alive 缓存后再次进入本页时，容器可能已被替换，
+// 必须重新核对实例绑定并按新尺寸重排，否则图表会停在旧画布上不再变化
+onActivated(() => {
+  nextTick(() => {
+    const el = historyChart.value
+    if (!el) return
+    if (chartInstance && typeof chartInstance.getDom === 'function' && chartInstance.getDom() !== el) {
+      try {
+        chartInstance.dispose()
+      } catch (e) {
+        /* 重建即可，忽略销毁异常 */
+      }
+      chartInstance = null
+    }
+    if (chartInstance) {
+      try {
+        chartInstance.resize()
+      } catch (e) {
+        /* 忽略 */
+      }
+    }
+    if (Array.isArray(chartSeries.value) && chartSeries.value.length > 0) {
+      updateChart()
+    }
+  })
 })
 
 onUnmounted(() => {
