@@ -10,6 +10,7 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -64,6 +65,16 @@ public class OperationLogRepository {
     public long countUnhandledAlerts() {
         Long count = jdbc.queryForObject("SELECT COUNT(*) FROM operation_logs WHERE " + ALERT_FILTER
                 + " AND operation_result = 0", Long.class);
+        return count != null ? count : 0;
+    }
+
+    /**
+     * 指定时间区间内新增的真实警报数量（含已处理）。
+     * 时间边界由调用方按本地时区传入，避免依赖 MySQL 服务器时区。
+     */
+    public long countAlertsBetween(LocalDateTime start, LocalDateTime end) {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM operation_logs WHERE " + ALERT_FILTER
+                + " AND operation_time >= ? AND operation_time < ?", Long.class, start, end);
         return count != null ? count : 0;
     }
 

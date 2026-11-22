@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -89,10 +90,22 @@ public class AlertController {
         }
     }
 
+    /**
+     * 警报数量。
+     * scope=today 返回当天新增的真实警报数（含已处理），供控制面板「今日警报」使用；
+     * 不传 scope 时保持原来的口径：全部未处理警报数。
+     */
     @GetMapping("/count")
-    public ResponseEntity<Map<String, Object>> count() {
+    public ResponseEntity<Map<String, Object>> count(
+            @RequestParam(name = "scope", required = false) String scope) {
         try {
-            return ResponseEntity.ok(Maps.of("count", operationLogRepository.countUnhandledAlerts()));
+            if ("today".equalsIgnoreCase(scope)) {
+                LocalDate today = LocalDate.now();
+                long count = operationLogRepository.countAlertsBetween(
+                        today.atStartOfDay(), today.plusDays(1).atStartOfDay());
+                return ResponseEntity.ok(Maps.of("count", count, "scope", "today"));
+            }
+            return ResponseEntity.ok(Maps.of("count", operationLogRepository.countUnhandledAlerts(), "scope", "unhandled"));
         } catch (Exception e) {
             log.error("获取警报数量失败: {}", e.getMessage());
             return ResponseEntity.status(500).body(Maps.of("error", e.getMessage()));

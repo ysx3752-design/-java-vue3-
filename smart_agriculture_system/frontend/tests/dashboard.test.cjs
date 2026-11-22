@@ -24,17 +24,21 @@ test('dashboard total is independent of five recent alerts',async()=>{
 test('a failed count endpoint does not discard other dashboard data',async()=>{
  const result=await(await api([],true)).getDashboardData();assert.equal(result.alertCount,null);assert.equal(result.alerts.length,5);assert.equal(result.sensorData.air_temperature,20)
 })
-test('sparse records populate only their own bin and zero readings are preserved',async()=>{
+test('sparse records populate only their own hour bin and zero readings are preserved',async()=>{
  const result=await(await api([{timestamp:new Date(now-60000).toISOString(),air_temperature:0,air_humidity:0}])).getTempHumidityTrend()
- assert.equal(result.times.length,8);assert.equal(result.temperatures.filter(v=>v!==null).length,1);assert.equal(result.temperatures[7],0)
- assert.equal(result.humidities[7],0);assert.ok(result.times.every(t=>t.endsWith(':37')))
+ // 24 个整点小时槽：只有 3 小时数据时也能画出几个点，而不是被 3 小时大槽并成一个孤点
+ assert.equal(result.times.length,24);assert.ok(result.times.every(t=>t.endsWith(':00')))
+ const filled=result.temperatures.map((v,i)=>({v,i})).filter(x=>x.v!==null)
+ assert.equal(filled.length,1);assert.equal(filled[0].v,0);assert.equal(filled[0].i,23)
+ assert.equal(result.humidities[23],0)
 })
-test('3-hour bins average valid readings and never fabricate missing values',async()=>{
+test('hourly bins average valid readings and never fabricate missing values',async()=>{
  const result=await(await api([
- {timestamp:new Date(now-3600000).toISOString(),air_temperature:20,air_humidity:null},
- {timestamp:new Date(now-60000).toISOString(),air_temperature:24},
+ {timestamp:new Date(now-55*60000).toISOString(),air_temperature:20,air_humidity:null},
+ {timestamp:new Date(now-50*60000).toISOString(),air_temperature:24},
  {timestamp:'invalid',air_temperature:100},
  {timestamp:new Date(now-30*3600000).toISOString(),air_temperature:100}
  ])).getTempHumidityTrend()
- assert.equal(result.temperatures[7],22);assert.ok(result.humidities.every(v=>v===null));assert.ok(result.temperatures.slice(0,7).every(v=>v===null))
+ assert.equal(result.temperatures[22],22);assert.equal(result.temperatures[23],null)
+ assert.ok(result.humidities.every(v=>v===null));assert.ok(result.temperatures.slice(0,22).every(v=>v===null))
 })

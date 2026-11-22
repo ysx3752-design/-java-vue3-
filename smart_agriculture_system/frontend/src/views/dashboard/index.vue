@@ -207,7 +207,7 @@ const refreshTempChart = async () => {
             type: 'line',
             data: trendData.temperatures,
             smooth: true,
-            showSymbol: trendData.temperatures.filter(Number.isFinite).length === 1,
+            showSymbol: trendData.temperatures.filter(Number.isFinite).length <= 8,
             lineStyle: {
               width: 3,
               shadowColor: 'rgba(0, 0, 0, 0.2)',
@@ -236,7 +236,7 @@ const refreshTempChart = async () => {
             yAxisIndex: 1,
             data: trendData.humidities,
             smooth: true,
-            showSymbol: trendData.humidities.filter(Number.isFinite).length === 1,
+            showSymbol: trendData.humidities.filter(Number.isFinite).length <= 8,
             lineStyle: {
               width: 3,
               shadowColor: 'rgba(0, 0, 0, 0.2)',
@@ -349,7 +349,7 @@ const loadDashboardData = async () => {
                 type: 'line',
                 data: trendData.temperatures,
                 smooth: true,
-                showSymbol: trendData.temperatures.filter(Number.isFinite).length === 1,
+                showSymbol: trendData.temperatures.filter(Number.isFinite).length <= 8,
                 lineStyle: {
                   width: 3,
                   shadowColor: 'rgba(0, 0, 0, 0.2)',
@@ -378,7 +378,7 @@ const loadDashboardData = async () => {
                 yAxisIndex: 1,
                 data: trendData.humidities,
                 smooth: true,
-                showSymbol: trendData.humidities.filter(Number.isFinite).length === 1,
+                showSymbol: trendData.humidities.filter(Number.isFinite).length <= 8,
                 lineStyle: {
                   width: 3,
                   shadowColor: 'rgba(0, 0, 0, 0.2)',
@@ -492,7 +492,7 @@ const tempHumidityChartOption = ref({
   xAxis: {
     type: 'category',
     boundaryGap: false,
-    data: ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'],
+    data: [],
     axisLine: {
       lineStyle: {
         color: '#DCDFE6'
@@ -542,7 +542,7 @@ const tempHumidityChartOption = ref({
     {
       name: '温度',
       type: 'line',
-      data: [23, 24, 25, 26, 27, 28, 26, 25],
+      data: [],
       smooth: true,
       showSymbol: false,
       lineStyle: {
@@ -571,7 +571,7 @@ const tempHumidityChartOption = ref({
       name: '湿度',
       type: 'line',
       yAxisIndex: 1,
-      data: [60, 62, 65, 63, 58, 55, 58, 62],
+      data: [],
       smooth: true,
       showSymbol: false,
       lineStyle: {

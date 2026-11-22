@@ -78,7 +78,8 @@
       </template>
       <div class="history-chart-container" style="height: 450px; position: relative;">
         <div ref="historyChart" class="history-chart" style="height: 100%; width: 100%;"></div>
-        <div v-if="monitorStore.loading" class="chart-loading">
+        <!-- 切换指标时曲线已按缓存数据即时重绘，只有初次加载（还没有任何数据）才铺遮罩 -->
+        <div v-if="trendLoading && !chartSeries.length" class="chart-loading">
           <el-icon class="is-loading"><Loading /></el-icon>
           <span>加载中...</span>
         </div>
@@ -173,6 +174,11 @@ const dateRange = ref([])
 const currentPage = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
+// 趋势图自己的加载态：不跟 monitorStore.loading 混用，
+// 避免表格/导出等操作把图表的遮罩状态带偏
+const trendLoading = ref(false)
+// 拉取失败时画在画布上的提示，正常渲染时会被清空
+const renderFailure = ref('')
 
 // 从store获取数据
 const realTimeData = computed(() => monitorStore.realTimeData)
@@ -252,41 +258,18 @@ const handleDateChange = () => {
 
 // 处理指标切换
 const handleMetricChange = (value) => {
-  console.log('指标切换为:', value)
-  
-  // 添加过渡动画效果
-  if (chartInstance) {
-    // 先显示加载状态
-    monitorStore.loading = true
-    
-    // 延迟一点时间再加载新数据，让用户感知到切换过程
-    setTimeout(() => {
-      fetchHistoryData()
-    }, 300)
-  } else {
-    fetchHistoryData()
-  }
+  if (!value) return
+  // 趋势图由 watch(selectedMetric) 立即重绘，这里只负责拉取最新数据
+  fetchHistoryData()
 }
 
 
 // 处理卡片点击
-const handleCardClick = (key) => {  // 如果已经选中了这个传感器，不做任何操作
+const handleCardClick = (key) => {
+  // 如果已经选中了这个传感器，不做任何操作
   if (selectedMetric.value === key) return
-  
   selectedMetric.value = key
-  
-  // 添加过渡动画效果
-  if (chartInstance) {
-    // 先显示加载状态
-    monitorStore.loading = true
-    
-    // 延迟一点时间再加载新数据，让用户感知到切换过程
-    setTimeout(() => {
-      fetchHistoryData()
-    }, 300)
-  } else {
-    fetchHistoryData()
-  }
+  fetchHistoryData()
 }
 
 // 获取传感器颜色
@@ -357,27 +340,33 @@ const handleCurrentChange = (val) => {
 // 避免先发后到的旧响应把新曲线覆盖掉
 let fetchSeq = 0
 
+// el-date-picker 的 daterange 两端都是当天 00:00，
+// 原样传给后端会把结束日一整天排除在外（选 11.21–11.22 实际只查 11.21），
+// 因此统一把结束时间补到当天最后一毫秒。
+const buildQueryRange = () => {
+  const start = new Date(dateRange.value[0])
+  const end = new Date(dateRange.value[1])
+  end.setHours(23, 59, 59, 999)
+  return { start, end }
+}
+
 // 获取历史数据
 const fetchHistoryData = async () => {
   if (!dateRange.value || dateRange.value.length !== 2) {
     ElMessage.warning('请选择日期范围')
+    trendLoading.value = false
     return
   }
 
   const seq = ++fetchSeq
+  trendLoading.value = true
 
   try {
-    // 显示加载状态
+    // 表格遮罩
     monitorStore.loading = true
 
-    // el-date-picker 的 daterange 两端都是当天 00:00，
-    // 原样传给后端会把结束日一整天排除在外（选 11.9–11.10 实际只查 11.9），
-    // 因此把结束时间补到当天最后一毫秒。
-    const rangeStart = new Date(dateRange.value[0])
-    const rangeEnd = new Date(dateRange.value[1])
-    rangeEnd.setHours(23, 59, 59, 999)
+    const { start: rangeStart, end: rangeEnd } = buildQueryRange()
 
-    // 直接使用API中的getHistoryData
     const response = await getHistoryData({
       start_time: rangeStart.toISOString(),
       end_time: rangeEnd.toISOString(),
@@ -385,7 +374,7 @@ const fetchHistoryData = async () => {
       page: currentPage.value,
       page_size: pageSize.value
     })
-    
+
     // 期间又发起了新查询，本次结果已过期，直接丢弃
     if (seq !== fetchSeq) return
 
@@ -403,8 +392,8 @@ const fetchHistoryData = async () => {
       monitorStore.historyData = []
       total.value = 0
     }
-    
-    // 趋势图单独取完整区间数据（不跟着表格分页走），再按时间段聚合
+
+    // 趋势图单独取完整区间数据（不跟着表格分页走），再按时间桶聚合
     try {
       const rangeResponse = await getHistoryRange({
         start_date: rangeStart.toISOString(),
@@ -414,67 +403,74 @@ const fetchHistoryData = async () => {
       // 旧请求晚到，丢弃，避免覆盖最新一次查询的曲线
       if (seq !== fetchSeq) return
       const rows = Array.isArray(rangeResponse) ? rangeResponse : (rangeResponse?.data || [])
-      const hours = Math.max(1, (rangeEnd - rangeStart) / 3600000)
-      // 24 小时显示 24 个点，时间跨度越大适当增加，上限 72 个避免过密
-      const points = Math.min(72, Math.max(24, Math.round(hours)))
-      chartSeries.value = bucketSeries(rows, { points, hours, end: rangeEnd })
+      // 时间桶严格对齐所选区间，横轴标签才会与真实采样时刻一致
+      chartSeries.value = bucketSeries(rows, { start: rangeStart, end: rangeEnd })
     } catch (rangeError) {
       console.warn('获取区间历史数据失败，趋势图退回当前页数据:', rangeError)
       chartSeries.value = monitorStore.historyData
     }
 
-    // 确保DOM已经更新后再更新图表
-    setTimeout(() => {
-      if (chartInstance && historyChart.value) {
-        updateChart()
-      }
-    }, 100)
+    if (seq !== fetchSeq) return
+    renderFailure.value = ''
+    scheduleRender()
   } catch (error) {
+    if (seq !== fetchSeq) return
     console.error('获取历史数据失败:', error)
     ElMessage.error('获取历史数据失败')
     monitorStore.historyData = []
     chartSeries.value = []
     total.value = 0
-    // 请求失败时同样清掉旧曲线：
-    // 否则画布停留在上一次查询结果上，用户会以为"日期选了没反应"。
-    if (chartInstance) {
-      chartInstance.clear()
-      chartInstance.setOption({
-        title: {
-          text: '历史数据加载失败',
-          subtext: '请稍后重试，或检查后端服务是否正常',
-          left: 'center',
-          top: 'center',
-          textStyle: { color: '#f56c6c', fontSize: 16, fontWeight: 'normal' },
-          subtextStyle: { color: '#b6bcc4', fontSize: 12 }
-        }
-      }, true)
-    }
+    // 失败时也要重画：把旧曲线清掉，否则画布停在上一张图上，
+    // 用户会以为"日期选了没反应"
+    renderFailure.value = '历史数据加载失败'
+    scheduleRender()
   } finally {
     // 只由最后一次请求收起加载态，避免旧请求提前把遮罩关掉
     if (seq === fetchSeq) {
+      trendLoaded = true
+      trendLoading.value = false
       monitorStore.loading = false
     }
   }
 }
 
-// 确保图表实例与当前容器一致：
-// DOM 变了就重建，绝不让实例继续画在已脱离文档的节点上。
+// ---- 趋势图渲染 ----
+// 渲染只由 (selectedMetric, chartSeries, dateRange) 三个状态决定：
+// 任何状态变化都重画一次，画完立刻回读 option 校验结果。
+//
+// 为什么要校验：ECharts 在内部主流程（tooltip 动作、dispatchAction 等）期间
+// 收到 setOption / resize 会直接 return，既不报错也不更新画布；一旦实例卡在
+// 这个状态，图表就会永远停在上一张图上（「切换指标后仍是空气温度曲线」）。
+// 这里发现没画上去就销毁重建实例再画一次，从机制上保证图表不会被冻住。
+let needsRender = false
+let renderQueued = false
+// 首次数据回来之前不要画「暂无数据」，否则进页面会闪一下空状态
+let trendLoaded = false
+
+// 销毁实例（DOM 变更、实例异常、组件卸载）
+const disposeChartInstance = () => {
+  if (!chartInstance) return
+  try {
+    chartInstance.dispose()
+  } catch (error) {
+    console.warn('销毁图表实例失败:', error)
+  }
+  chartInstance = null
+  chartInitialized.value = false
+}
+
+// 确保图表实例与当前容器一致：DOM 变了或实例已销毁，都重建
 const ensureChartInstance = () => {
   const el = historyChart.value
   if (!el) return null
-  if (chartInstance && typeof chartInstance.getDom === 'function' && chartInstance.getDom() !== el) {
-    console.warn('图表实例与当前容器不一致，重建实例')
-    try {
-      chartInstance.dispose()
-    } catch (e) {
-      console.warn('销毁旧图表实例失败:', e)
-    }
-    chartInstance = null
+  if (chartInstance) {
+    const stale = chartInstance.isDisposed?.() || chartInstance.getDom?.() !== el
+    if (stale) disposeChartInstance()
   }
   if (!chartInstance) {
     try {
       chartInstance = echarts.init(el)
+      chartInstance.on('error', (params) => console.error('图表渲染错误:', params))
     } catch (error) {
       console.error('图表初始化失败:', error)
       return null
@@ -484,453 +480,335 @@ const ensureChartInstance = () => {
   return chartInstance
 }
 
-// 更新图表
-const updateChart = () => {
-  // 使用nextTick确保DOM已更新
-  nextTick(() => {
-    try {
-      const el = historyChart.value
-      if (!el) {
-        console.warn('图表DOM元素不存在')
-        return
+// 标题里的日期范围后缀
+const formatRangeLabel = () => {
+  if (!dateRange.value || dateRange.value.length !== 2) return ''
+  const startDate = new Date(dateRange.value[0])
+  const endDate = new Date(dateRange.value[1])
+  return ` (${startDate.toLocaleDateString()} 至 ${endDate.toLocaleDateString()})`
+}
+
+// 组装 option —— 纯函数，只读当前状态，不碰实例
+const buildTrendOption = () => {
+  // 请求失败：画错误提示，绝不把上一次查询的曲线留在画布上
+  if (renderFailure.value) {
+    return {
+      title: {
+        text: renderFailure.value,
+        subtext: '请稍后重试，或检查后端服务是否正常',
+        left: 'center',
+        top: 'center',
+        textStyle: { color: '#f56c6c', fontSize: 16, fontWeight: 'normal' },
+        subtextStyle: { color: '#b6bcc4', fontSize: 12 }
       }
-
-      // 容器还没布局出尺寸时不要初始化/绘制。
-      // ECharts 一旦以 0×0 初始化，后续 resize 也救不回来，
-      // 表现为"刷新后第一次能用，之后怎么点都不动"。
-      if (el.clientWidth === 0 || el.clientHeight === 0) {
-        setTimeout(() => {
-          if (historyChart.value && historyChart.value.clientWidth > 0) {
-            try {
-              chartInstance && chartInstance.resize()
-            } catch (e) {
-              /* 尺寸恢复后重画即可，忽略 */
-            }
-            updateChart()
-          }
-        }, 150)
-        return
-      }
-
-      const instance = ensureChartInstance()
-      if (!instance) return
-      try {
-        instance.resize()
-      } catch (e) {
-        console.warn('图表调整大小失败:', e)
-      }
-      
-      // 趋势图使用聚合后的完整区间数据
-      if (!Array.isArray(chartSeries.value) || chartSeries.value.length === 0) {
-        // 必须 clear + notMerge：setOption 默认是合并模式，
-        // 只改 title 会让上一次查询的 series 留在画布上，
-        // 表现为"日期改了、曲线还是旧的"。
-        console.warn('所选区间无数据，清空图表避免残留旧曲线')
-        chartInstance.clear()
-        chartInstance.setOption({
-          title: {
-            text: '所选时间段暂无数据',
-            subtext: '数据库中没有该区间的采样记录，请调整日期范围',
-            left: 'center',
-            top: 'center',
-            textStyle: {
-              color: '#909399',
-              fontSize: 16,
-              fontWeight: 'normal'
-            },
-            subtextStyle: {
-              color: '#b6bcc4',
-              fontSize: 12
-            }
-          }
-        }, true)
-        return
-      }
-
-      // 数据转换
-      const data = (chartSeries.value || [])
-        .filter(item => item && item.timestamp)
-        .map(item => {
-          try {
-            // 确定使用哪个字段
-            let value = item[selectedMetric.value]
-            
-            // 兼容处理不同字段名
-            if (value === undefined || value === null) {
-              if (selectedMetric.value === 'temperature' && item.air_temperature !== undefined) {
-                value = item.air_temperature
-              } else if (selectedMetric.value === 'humidity' && item.air_humidity !== undefined) {
-                value = item.air_humidity
-              } else if (selectedMetric.value === 'co2_level' && item.co2_concentration !== undefined) {
-                value = item.co2_concentration
-              }
-            }
-            
-            // 如果值仍然是 undefined 或 null，则跳过
-            if (value === undefined || value === null) {
-              return null
-            }
-            
-            // 格式化时间显示，根据日期范围调整格式
-            const itemDate = new Date(item.timestamp)
-            let formattedTime
-            
-            // 如果是24小时内的数据，只显示时间
-            const oneDayMs = 24 * 60 * 60 * 1000
-            const isWithin24Hours = dateRange.value && 
-                                  (dateRange.value[1] - dateRange.value[0] <= oneDayMs)
-            
-            if (isWithin24Hours) {
-              formattedTime = itemDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            } else {
-              formattedTime = itemDate.toLocaleString([], { 
-                month: '2-digit', 
-                day: '2-digit', 
-                hour: '2-digit', 
-                minute: '2-digit'
-              })
-            }
-            
-            return {
-              time: formattedTime,
-              fullTime: itemDate,
-              value: parseFloat(value)
-            }
-          } catch (error) {
-            console.error('处理数据项时出错:', error, item)
-            return null
-          }
-        })
-        .filter(item => item !== null && !isNaN(item.value))
-        
-      // 确保数据按时间排序
-      data.sort((a, b) => a.fullTime - b.fullTime)
-
-      if (!data || data.length === 0) {
-        console.warn('处理后的历史数据为空，显示无数据提示')
-
-        // 用 notMerge 覆盖，避免上一次的 series 残留在画布上
-        if (chartInstance) {
-          chartInstance.setOption({
-            title: {
-              text: '所选时间段暂无数据',
-              subtext: '该指标在此区间没有有效采样值',
-              left: 'center',
-              top: 'center',
-              textStyle: { color: '#909399', fontSize: 16, fontWeight: 'normal' },
-              subtextStyle: { color: '#b6bcc4', fontSize: 12 }
-            }
-          }, true)
-        }
-        return
-      }
-
-      // 获取所选指标信息
-      const selectedItem = monitorItems.find(item => item.key === selectedMetric.value) || 
-                         { label: '未知指标', unit: '' }
-
-      // 设置图表配置
-      try {
-        // 实例已在本次调用开头确保过，这里只做兜底
-        if (!chartInstance || !historyChart.value) {
-          console.warn('图表实例或DOM元素不存在，无法更新图表')
-          return
-        }
-        
-        // 获取当前指标的颜色
-        const metricColor = getSensorColor(selectedMetric.value)
-        
-        // 根据日期范围确定是否显示详细时间
-        const oneDayMs = 24 * 60 * 60 * 1000
-        const isWithin24Hours = dateRange.value && dateRange.value.length === 2 && 
-                               (dateRange.value[1] - dateRange.value[0] <= oneDayMs)
-        
-        // 设置图表标题，添加日期范围信息
-        let titleText = `${selectedItem.label}趋势`
-        if (dateRange.value && dateRange.value.length === 2) {
-          const startDate = new Date(dateRange.value[0])
-          const endDate = new Date(dateRange.value[1])
-          const formatDate = (date) => {
-            return date.toLocaleDateString()
-          }
-          titleText += ` (${formatDate(startDate)} 至 ${formatDate(endDate)})`
-        }
-        
-        // 清除旧的图表配置
-        chartInstance.clear();
-        
-        // 设置新的图表配置
-        chartInstance.setOption({
-          animation: true,
-          animationDuration: 800,
-          animationEasing: 'cubicInOut',
-          title: {
-            text: titleText,
-            left: 'center',
-            textStyle: {
-              fontSize: 16,
-              fontWeight: 'bold',
-              color: '#303133'
-            }
-          },
-          tooltip: {
-            trigger: 'axis',
-            formatter: function(params) {
-              const param = params[0]
-              const formattedValue = param.data.value.toFixed(
-                selectedMetric.value === 'light_intensity' || selectedMetric.value === 'co2_level' ? 0 : 1
-              )
-              return `${param.name}<br/>${selectedItem.label}: <strong>${formattedValue}${selectedItem.unit}</strong>`
-            },
-            axisPointer: {
-              animation: true,
-              lineStyle: {
-                color: metricColor,
-                width: 2
-              }
-            },
-            backgroundColor: 'rgba(255, 255, 255, 0.95)',
-            borderWidth: 1,
-            borderColor: '#eee',
-            padding: 10,
-            textStyle: {
-              color: '#333'
-            },
-            extraCssText: 'box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);'
-          },
-          grid: {
-            left: '3%',
-            right: '4%',
-            bottom: '8%',
-            top: '60px',
-            containLabel: true
-          },
-          xAxis: {
-            type: 'category',
-            data: data.map(item => item.time),
-            axisLabel: {
-              rotate: isWithin24Hours ? 0 : 45,
-              fontSize: 11,
-              color: '#666',
-              interval: isWithin24Hours ? 'auto' : 0,
-              formatter: function(value) {
-                return value
-              }
-            },
-            axisLine: {
-              lineStyle: {
-                color: '#ddd'
-              }
-            },
-            axisTick: {
-              alignWithLabel: true,
-              lineStyle: {
-                color: '#ddd'
-              }
-            }
-          },
-          yAxis: {
-            type: 'value',
-            name: selectedItem.label + selectedItem.unit,
-            nameTextStyle: {
-              color: '#666',
-              padding: [0, 0, 0, 30]
-            },
-            axisLine: {
-              show: true,
-              lineStyle: {
-                color: '#ddd'
-              }
-            },
-            splitLine: {
-              lineStyle: {
-                color: '#eee',
-                type: 'dashed'
-              }
-            },
-            axisLabel: {
-              formatter: '{value}'
-            }
-          },
-          dataZoom: [{
-            type: 'inside',
-            start: 0,
-            end: 100,
-            zoomLock: false
-          }, {
-            type: 'slider',
-            show: data.length > 20,
-            start: 0,
-            end: 100,
-            height: 20,
-            bottom: 0
-          }],
-          series: [{
-            name: selectedItem.label,
-            data: data.map(item => item.value),
-            type: 'line',
-            smooth: true,
-            showSymbol: data.length < 30,
-            symbolSize: 6,
-            itemStyle: {
-              color: metricColor
-            },
-            lineStyle: {
-              width: 3,
-              shadowColor: 'rgba(0, 0, 0, 0.2)',
-              shadowBlur: 10,
-              color: metricColor
-            },
-            areaStyle: {
-              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                {
-                  offset: 0,
-                  color: `rgba(${getSafeRgbValues(metricColor)}, 0.5)`
-                },
-                {
-                  offset: 1,
-                  color: `rgba(${getSafeRgbValues(metricColor)}, 0.1)`
-                }
-              ])
-            },
-            emphasis: {
-              itemStyle: {
-                color: metricColor,
-                borderColor: '#fff',
-                borderWidth: 2
-              }
-            }
-          }]
-        }, true)
-      } catch (error) {
-        console.error('设置图表选项失败:', error)
-        ElMessage.error('图表渲染失败')
-      }
-    } catch (error) {
-      console.error('更新图表时出错:', error)
     }
+  }
+
+  const selectedItem = monitorItems.find((item) => item.key === selectedMetric.value) ||
+    { label: '未知指标', unit: '' }
+  const metricColor = getSensorColor(selectedMetric.value)
+
+  const oneDayMs = 24 * 60 * 60 * 1000
+  const rangeStart = dateRange.value && dateRange.value.length === 2 ? new Date(dateRange.value[0]) : null
+  const rangeEnd = dateRange.value && dateRange.value.length === 2 ? new Date(dateRange.value[1]) : null
+  const isWithin24Hours = Boolean(rangeStart && rangeEnd && rangeEnd - rangeStart <= oneDayMs)
+
+  const data = (Array.isArray(chartSeries.value) ? chartSeries.value : [])
+    .filter((item) => item && item.timestamp)
+    .map((item) => {
+      let value = item[selectedMetric.value]
+
+      // 兼容后端 / 缓存里的其他字段名
+      if (value === undefined || value === null) {
+        if (selectedMetric.value === 'temperature' && item.air_temperature !== undefined) {
+          value = item.air_temperature
+        } else if (selectedMetric.value === 'humidity' && item.air_humidity !== undefined) {
+          value = item.air_humidity
+        } else if (selectedMetric.value === 'co2_level' && item.co2_concentration !== undefined) {
+          value = item.co2_concentration
+        }
+      }
+      if (value === undefined || value === null) return null
+
+      const itemDate = new Date(item.timestamp)
+      if (Number.isNaN(itemDate.getTime())) return null
+
+      const num = parseFloat(value)
+      if (Number.isNaN(num)) return null
+
+      const time = isWithin24Hours
+        ? itemDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : itemDate.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+
+      return { time, fullTime: itemDate, value: num }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.fullTime - b.fullTime)
+
+  if (data.length === 0) {
+    return {
+      title: {
+        text: '所选时间段暂无数据',
+        subtext: '该指标在此区间没有有效采样值',
+        left: 'center',
+        top: 'center',
+        textStyle: { color: '#909399', fontSize: 16, fontWeight: 'normal' },
+        subtextStyle: { color: '#b6bcc4', fontSize: 12 }
+      }
+    }
+  }
+
+  const digits = selectedMetric.value === 'light_intensity' || selectedMetric.value === 'co2_level' ? 0 : 1
+
+  return {
+    animation: true,
+    animationDuration: 600,
+    animationEasing: 'cubicInOut',
+    title: {
+      text: `${selectedItem.label}趋势${formatRangeLabel()}`,
+      left: 'center',
+      textStyle: { fontSize: 16, fontWeight: 'bold', color: '#303133' }
+    },
+    tooltip: {
+      trigger: 'axis',
+      // series.data 是纯数字数组，数值在 param.value 上；
+      // 早期写成 param.data.value 会抛 TypeError，异常发生在 ECharts 的
+      // tooltip 动作里，会把实例卡在「主流程」状态，之后所有 setOption 都被
+      // 静默忽略 —— 这是「图表只显示空气温度曲线」的根因，这里一并修掉。
+      formatter: (params) => {
+        try {
+          const list = Array.isArray(params) ? params : [params]
+          const param = list.find((item) => item && item.seriesName) || list[0]
+          if (!param) return ''
+          const raw = Array.isArray(param.value) ? param.value[param.value.length - 1] : param.value
+          const num = typeof raw === 'number' ? raw : Number(raw)
+          const text = Number.isFinite(num) ? num.toFixed(digits) : '--'
+          const label = param.axisValueLabel || param.name || ''
+          return `${label}<br/>${param.marker || ''}${selectedItem.label}: <strong>${text}${selectedItem.unit}</strong>`
+        } catch (error) {
+          return ''
+        }
+      },
+      axisPointer: {
+        animation: true,
+        lineStyle: { color: metricColor, width: 2 }
+      },
+      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+      borderWidth: 1,
+      borderColor: '#eee',
+      padding: 10,
+      textStyle: { color: '#333' },
+      extraCssText: 'box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);'
+    },
+    grid: {
+      left: '3%',
+      right: '4%',
+      bottom: '8%',
+      top: '60px',
+      containLabel: true
+    },
+    xAxis: {
+      type: 'category',
+      data: data.map((item) => item.time),
+      axisLabel: {
+        rotate: isWithin24Hours ? 0 : 45,
+        fontSize: 11,
+        color: '#666',
+        interval: isWithin24Hours ? 'auto' : 0
+      },
+      axisLine: { lineStyle: { color: '#ddd' } },
+      axisTick: { alignWithLabel: true, lineStyle: { color: '#ddd' } }
+    },
+    yAxis: {
+      type: 'value',
+      name: selectedItem.label + selectedItem.unit,
+      nameTextStyle: { color: '#666', padding: [0, 0, 0, 30] },
+      axisLine: { show: true, lineStyle: { color: '#ddd' } },
+      splitLine: { lineStyle: { color: '#eee', type: 'dashed' } },
+      axisLabel: { formatter: '{value}' }
+    },
+    dataZoom: [{
+      type: 'inside',
+      start: 0,
+      end: 100,
+      zoomLock: false
+    }, {
+      type: 'slider',
+      show: data.length > 20,
+      start: 0,
+      end: 100,
+      height: 20,
+      bottom: 0
+    }],
+    series: [{
+      name: selectedItem.label,
+      data: data.map((item) => item.value),
+      type: 'line',
+      smooth: true,
+      showSymbol: data.length < 30,
+      symbolSize: 6,
+      itemStyle: { color: metricColor },
+      lineStyle: {
+        width: 3,
+        shadowColor: 'rgba(0, 0, 0, 0.2)',
+        shadowBlur: 10,
+        color: metricColor
+      },
+      areaStyle: {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: `rgba(${getSafeRgbValues(metricColor)}, 0.5)` },
+          { offset: 1, color: `rgba(${getSafeRgbValues(metricColor)}, 0.1)` }
+        ])
+      },
+      emphasis: {
+        itemStyle: { color: metricColor, borderColor: '#fff', borderWidth: 2 }
+      }
+    }]
+  }
+}
+
+// 真正写画布；返回 false 表示这次没有画上去（被 ECharts 忽略或抛错）
+const paintOption = (instance, option) => {
+  // 只有尺寸变了才重排，避免每次切换指标都多跑一遍渲染
+  try {
+    const el = historyChart.value
+    if (el && (instance.getWidth() !== el.clientWidth || instance.getHeight() !== el.clientHeight)) {
+      instance.resize()
+    }
+  } catch (error) {
+    /* 尺寸异常不阻塞绘制 */
+  }
+  try {
+    // notMerge = true：整份 option 替换，旧指标的标题/坐标轴/曲线不会残留
+    instance.setOption(option, true)
+  } catch (error) {
+    console.error('设置图表选项失败:', error)
+    return false
+  }
+  const applied = instance.getOption?.()?.title?.[0]?.text
+  return applied === option.title.text
+}
+
+// 按当前状态重绘趋势图
+const paintTrendChart = () => {
+  const el = historyChart.value
+  if (!el) return false
+
+  // 容器没有尺寸（页面被 keep-alive 缓存、父级隐藏）时既不能 init 也不能画，
+  // 但这一次渲染不能丢：标记后由 ResizeObserver / onActivated 补画。
+  if (el.clientWidth === 0 || el.clientHeight === 0) {
+    needsRender = true
+    return false
+  }
+
+  // 首次请求还没回来：保持「初始化图表…」遮罩，避免闪出空状态
+  if (!trendLoaded && !renderFailure.value && !chartSeries.value.length) {
+    needsRender = true
+    return false
+  }
+
+  const option = buildTrendOption()
+  const instance = ensureChartInstance()
+  if (!instance) {
+    needsRender = true
+    return false
+  }
+
+  let painted = paintOption(instance, option)
+
+  if (!painted) {
+    console.warn('趋势图未生效，重建实例后重试', {
+      expect: option.title.text,
+      actual: instance.getOption?.()?.title?.[0]?.text
+    })
+    disposeChartInstance()
+    const retry = ensureChartInstance()
+    painted = retry ? paintOption(retry, option) : false
+  }
+
+  needsRender = !painted
+  return painted
+}
+
+// 合并同一轮状态变化，避免一次切换触发多次重绘
+const scheduleRender = () => {
+  if (renderQueued) return
+  renderQueued = true
+  nextTick(() => {
+    renderQueued = false
+    paintTrendChart()
   })
 }
 
-// 定义 resize 处理函数
-const handleResize = () => {
-  if (chartInstance && chartInstance.resize && typeof chartInstance.resize === 'function') {
-    try {
-      nextTick(() => {
+// 容器尺寸变化（侧边栏折叠、窗口缩放、页面从缓存恢复）时补画
+let trendResizeObserver = null
+const observeChartSize = () => {
+  const el = historyChart.value
+  if (!el || typeof ResizeObserver === 'undefined') return
+  if (trendResizeObserver && trendResizeObserver.__el === el) return
+  if (trendResizeObserver) {
+    trendResizeObserver.disconnect()
+    trendResizeObserver = null
+  }
+  trendResizeObserver = new ResizeObserver(() => {
+    if (chartInstance && !chartInstance.isDisposed?.()) {
+      try {
         chartInstance.resize()
-      })
+      } catch (error) {
+        /* 忽略尺寸异常 */
+      }
+    }
+    if (needsRender) scheduleRender()
+  })
+  trendResizeObserver.__el = el
+  trendResizeObserver.observe(el)
+}
+
+// 窗口尺寸变化：只重排画布，不重新取数
+const handleResize = () => {
+  if (chartInstance && typeof chartInstance.resize === 'function') {
+    try {
+      chartInstance.resize()
     } catch (error) {
       console.warn('调整图表大小失败:', error)
     }
   }
+  if (needsRender) scheduleRender()
 }
 
-// 指标切换后立即按现有数据重绘一次，避免数据请求失败时图表停留在上一个指标
+// 指标切换后立即按现有数据重绘：缓存里每行都含全部指标，
+// 不必等接口回来，切换指标时曲线和标题会同步变化
 watch(selectedMetric, () => {
-  nextTick(() => {
-    if (Array.isArray(chartSeries.value) && chartSeries.value.length > 0) {
-      updateChart()
-    }
-  })
+  scheduleRender()
 })
 
 // 生命周期钩子
 onMounted(async () => {
   try {
     // 实时数据由 useRealtimeFeed 统一订阅（挂载即拉取一次，之后每 5 秒刷新）
-    
+
     // 设置默认日期范围（过去24小时）
     const end = new Date()
     const start = new Date()
     start.setTime(start.getTime() - 3600 * 1000 * 24)
     dateRange.value = [start, end]
-    
-    // 添加窗口大小变化的监听器
+
     window.addEventListener('resize', handleResize)
-    
-    // 延迟初始化图表和获取历史数据
-    setTimeout(async () => {
-      try {
-        // 初始化图表 - 确保DOM已渲染
-        await nextTick()
-        if (historyChart.value) {
-          // 如果已经有实例，先销毁它
-          if (chartInstance) {
-            try {
-              chartInstance.dispose()
-            } catch (e) {
-              console.warn('销毁旧图表实例失败:', e)
-            }
-            chartInstance = null
-          }
-          
-          try {
-            // 创建新的图表实例
-            chartInstance = echarts.init(historyChart.value)
-            
-            // 添加图表点击事件处理
-            chartInstance.on('click', (params) => {
-              console.log('点击了图表点:', params)
-              // 可以在这里添加点击数据点时的交互功能
-            })
-            
-            // 添加错误处理
-            chartInstance.on('error', (params) => {
-              console.error('图表渲染错误:', params)
-            })
-            
-            // 标记图表已初始化
-            chartInitialized.value = true
-          } catch (initError) {
-            console.error('初始化图表实例失败:', initError)
-            chartInstance = null
-            chartInitialized.value = false
-          }
-        } else {
-          console.warn('图表DOM元素不存在，无法初始化图表')
-        }
-        
-        // 获取历史数据
-        if (chartInstance) {
-          await fetchHistoryData()
-        } else {
-          console.warn('图表实例不存在，跳过数据获取')
-        }
-      } catch (error) {
-        console.error('初始化失败:', error)
-        ElMessage.error('初始化图表或获取数据失败')
-      }
-    }, 800) // 增加延迟时间，确保DOM完全渲染
+    await nextTick()
+    observeChartSize()
+    await fetchHistoryData()
   } catch (error) {
     console.error('组件挂载时出错:', error)
     ElMessage.error('加载数据失败，请刷新页面重试')
   }
 })
 
-// keep-alive 缓存后再次进入本页时，容器可能已被替换，
-// 必须重新核对实例绑定并按新尺寸重排，否则图表会停在旧画布上不再变化
+// keep-alive 缓存后再次进入本页时，DOM 会被重新挂载、尺寸才恢复，
+// 这里补一次尺寸监听并重绘，避免图表停在缓存前的旧画布上
 onActivated(() => {
   nextTick(() => {
-    const el = historyChart.value
-    if (!el) return
-    if (chartInstance && typeof chartInstance.getDom === 'function' && chartInstance.getDom() !== el) {
-      try {
-        chartInstance.dispose()
-      } catch (e) {
-        /* 重建即可，忽略销毁异常 */
-      }
-      chartInstance = null
-    }
-    if (chartInstance) {
-      try {
-        chartInstance.resize()
-      } catch (e) {
-        /* 忽略 */
-      }
-    }
-    if (Array.isArray(chartSeries.value) && chartSeries.value.length > 0) {
-      updateChart()
-    }
+    observeChartSize()
+    scheduleRender()
   })
 })
 
@@ -938,19 +816,12 @@ onUnmounted(() => {
   try {
     // 实时轮询由 useRealtimeFeed 在 onDeactivated / onUnmounted 中释放
 
-    // 移除窗口大小变化的监听器
     window.removeEventListener('resize', handleResize)
-    
-    // 销毁图表实例
-    if (chartInstance) {
-      try {
-        chartInstance.dispose()
-      } catch (error) {
-        console.warn('销毁图表实例失败:', error)
-      }
-      chartInstance = null
-      chartInitialized.value = false
+    if (trendResizeObserver) {
+      trendResizeObserver.disconnect()
+      trendResizeObserver = null
     }
+    disposeChartInstance()
   } catch (error) {
     console.error('组件卸载时出错:', error)
   }
@@ -963,9 +834,12 @@ const handleExport = () => {
     return
   }
 
+  // 与表格查询保持一致：结束日补到 23:59:59.999，避免导出零宽度区间
+  const { start: rangeStart, end: rangeEnd } = buildQueryRange()
+
   const params = {
-    start_time: dateRange.value[0].toISOString(),
-    end_time: dateRange.value[1].toISOString(),
+    start_time: rangeStart.toISOString(),
+    end_time: rangeEnd.toISOString(),
     metric: selectedMetric.value,
     export: true
   }

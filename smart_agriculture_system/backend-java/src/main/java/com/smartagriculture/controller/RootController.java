@@ -165,7 +165,14 @@ public class RootController {
             headers.setContentType(new MediaType("text", "csv", StandardCharsets.UTF_8));
             headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + filename);
             log.info("导出传感器数据 {} 条", records.size());
-            return new ResponseEntity<>(csv.toString().getBytes(StandardCharsets.UTF_8), headers, org.springframework.http.HttpStatus.OK);
+            // 前置 UTF-8 BOM（EF BB BF），保证 Excel 双击打开时中文不乱码
+            byte[] content = csv.toString().getBytes(StandardCharsets.UTF_8);
+            byte[] body = new byte[content.length + 3];
+            body[0] = (byte) 0xEF;
+            body[1] = (byte) 0xBB;
+            body[2] = (byte) 0xBF;
+            System.arraycopy(content, 0, body, 3, content.length);
+            return new ResponseEntity<>(body, headers, org.springframework.http.HttpStatus.OK);
         } catch (Exception e) {
             log.error("导出传感器数据失败: {}", e.getMessage());
             return ResponseEntity.status(500)

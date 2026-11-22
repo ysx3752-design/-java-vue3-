@@ -21,19 +21,25 @@ const NUMERIC_FIELDS = [
 /**
  * 将原始记录按时间桶聚合成固定数量的曲线点。
  *
+ * 注意：start / end 应传入查询区间的实际边界。早期只传 hours，
+ * 由 end - hours 反推窗口起点，会让时间桶整体偏移（选 11.21–11.22 时
+ * 窗口实际从 11.20 23:59 开始），横轴标签与真实采样时刻对不上。
+ *
  * @param {Array} rows 后端返回的原始记录
  * @param {Object} options
- * @param {number} options.points 目标点数，默认 24（每小时一个）
- * @param {number} options.hours 时间窗口，默认 24 小时
- * @param {Date} options.end 窗口结束时间，默认当前时间
+ * @param {Date|string} options.start 窗口开始时间
+ * @param {Date|string} options.end 窗口结束时间，默认当前时间
+ * @param {number} options.hours 未传 start 时，用 end - hours 推窗口起点，默认 24
+ * @param {number} options.points 目标点数，默认按小时数推算（24–72）
  * @returns {Array} 聚合后的数据点
  */
 export function bucketSeries(rows, options = {}) {
-  const points = options.points || 24
-  const hours = options.hours || 24
   const end = options.end ? new Date(options.end) : new Date()
-  const start = new Date(end.getTime() - hours * 3600 * 1000)
-  const span = end.getTime() - start.getTime()
+  const start = options.start
+    ? new Date(options.start)
+    : new Date(end.getTime() - (options.hours || 24) * 3600 * 1000)
+  const span = Math.max(1, end.getTime() - start.getTime())
+  const points = options.points || Math.min(72, Math.max(24, Math.round(span / 3600000)))
   const bucketSize = span / points
 
   const buckets = Array.from({ length: points }, () => null)
@@ -47,28 +53,32 @@ export function bucketSeries(rows, options = {}) {
     if (index < 0) index = 0
     if (index >= points) index = points - 1
 
-    const bucket = buckets[index] || { sums: {}, count: 0, lastTime: 0 }
+    const bucket = buckets[index] || { sums: {}, counts: {}, samples: 0, lastTime: 0 }
     for (const field of NUMERIC_FIELDS) {
-      const value = Number(row[field])
-      if (!Number.isNaN(value)) {
-        bucket.sums[field] = (bucket.sums[field] || 0) + value
-      }
+      const raw = row[field]
+      if (raw === null || raw === undefined || raw === '') continue
+      const value = Number(raw)
+      if (!Number.isFinite(value)) continue
+      bucket.sums[field] = (bucket.sums[field] || 0) + value
+      bucket.counts[field] = (bucket.counts[field] || 0) + 1
     }
-    bucket.count += 1
+    bucket.samples += 1
     bucket.lastTime = Math.max(bucket.lastTime, time)
     buckets[index] = bucket
   }
 
   const series = []
   buckets.forEach((bucket, index) => {
-    if (!bucket || bucket.count === 0) return
+    if (!bucket || bucket.samples === 0) return
     const point = {
       timestamp: new Date(start.getTime() + index * bucketSize).toISOString(),
-      sampleCount: bucket.count
+      sampleCount: bucket.samples
     }
     for (const field of NUMERIC_FIELDS) {
-      if (bucket.sums[field] !== undefined) {
-        point[field] = Math.round((bucket.sums[field] / bucket.count) * 10) / 10
+      // 按字段各自的有效样本数取均值：某些记录缺字段时不会把平均值拉低
+      const count = bucket.counts[field]
+      if (count) {
+        point[field] = Math.round((bucket.sums[field] / count) * 10) / 10
       }
     }
     // 兼容字段

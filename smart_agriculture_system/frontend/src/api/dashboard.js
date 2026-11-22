@@ -21,7 +21,9 @@ export function getDashboardData() {
     getDeviceStatus(),
     getAlerts(),
     getConnectionStatus(),
-    request({ url: '/api/alerts/count', method: 'get' })
+    // 卡片口径是「今日警报」：只要当天新增的警报（含已处理），
+    // 不传 scope 拿到的是全部未处理数（历史累计，会显示成两千多）
+    request({ url: '/api/alerts/count', method: 'get', params: { scope: 'today' } })
   ]).then(([sensorResult, deviceResult, alertResult, connectionResult, countResult]) => {
     const pick = (result, fallback) => (result.status === 'fulfilled' && result.value !== undefined ? result.value : fallback)
     return {
@@ -53,23 +55,38 @@ export function getTempHumidityTrend() {
     if (data.length === 0) {
       return { times: [], temperatures: [], humidities: [] }
     }
-    
-    // 保留8点的现有图表布局；按真实的3小时时段聚合，空时段保留缺口。
-    const end = Date.now()
-    const interval = 3 * 60 * 60 * 1000
-    const start = end - 8 * interval
-    const times = [], temperatures = [], humidities = []
+
+    // 24 个小时槽，槽边界对齐整点。
+    // 早期用 8 个 3 小时的大槽：只有几小时数据时，全部样本会被合并进同一个槽，
+    // 图上只剩最右侧一个孤立的点，看起来就像「曲线全没了」。
+    const HOUR = 60 * 60 * 1000
+    const slotCount = 24
+    const end = new Date()
+    end.setMinutes(0, 0, 0)
+    const start = end.getTime() - (slotCount - 1) * HOUR
+
     const numeric = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value)
-    for (let i = 0; i < 8; i++) {
-      const left = start + i * interval, right = left + interval
-      const time = new Date(right)
-      times.push(`${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`)
-      const records = data.filter(record => {
-        const timestamp = new Date(record?.timestamp).getTime()
-        return timestamp >= left && (timestamp < right || (i === 7 && timestamp === right))
-      })
+    const buckets = []
+    const times = []
+    for (let i = 0; i < slotCount; i++) {
+      const left = start + i * HOUR
+      const time = new Date(left)
+      times.push(`${String(time.getHours()).padStart(2, '0')}:00`)
+      buckets.push({ left, right: left + HOUR, records: [] })
+    }
+
+    for (const record of data) {
+      const timestamp = new Date(record?.timestamp).getTime()
+      if (!Number.isFinite(timestamp)) continue
+      const bucket = buckets.find(item => timestamp >= item.left && timestamp < item.right)
+      if (bucket) bucket.records.push(record)
+    }
+
+    const temperatures = []
+    const humidities = []
+    for (const bucket of buckets) {
       const average = (key, alias) => {
-        const values = records.map(record => numeric(record[key] ?? record[alias])).filter(value => value !== null)
+        const values = bucket.records.map(record => numeric(record[key] ?? record[alias])).filter(value => value !== null)
         return values.length ? Number((values.reduce((a, b) => a + b, 0) / values.length).toFixed(1)) : null
       }
       temperatures.push(average('air_temperature', 'temperature'))
