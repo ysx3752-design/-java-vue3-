@@ -23,7 +23,12 @@
           @select="selectDevice" @control="handleControl" />
       </div>
       <el-card class="device-panel" shadow="never">
-        <template #header>设备状态</template>
+        <template #header>
+          <div class="panel-header">
+            <span>设备状态</span>
+            <el-switch :model-value="autoEnabled" :loading="autoToggling" active-text="自动控制" @change="toggleAutoControl" />
+          </div>
+        </template>
         <div class="device-list">
           <div v-for="device in devices" :key="device.type" class="device-entry">
             <div class="device-row" :class="{ selected: selected === device.type }">
@@ -51,13 +56,14 @@
   </div>
 </template>
 <script setup>
-import { ref, computed, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useMonitorStore } from '@/store/monitor'
 import { useDeviceControl } from '@/composables/useDeviceControl'
 import RealtimeMetrics from '@/components/RealtimeMetrics.vue'
 import { deviceStateText, deviceActionText, deviceNextAction } from '@/utils/devicePresentation'
 import { METRIC_LIST } from '@/composables/useRealtimeFeed'
+import { getAutoControlStatus, enableAutoControl, disableAutoControl } from '@/api/auto-control'
 
 const GreenhouseTwin = defineAsyncComponent(() => import('@/components/DigitalTwin/GreenhouseTwin.vue'))
 const monitorStore = useMonitorStore()
@@ -84,6 +90,32 @@ const handleControl = async (type, action) => {
     ElMessage.error(cause.message || '设备控制失败')
   }
 }
+
+// 自动控制总开关（从告警页的规则面板移入，逻辑不变）
+const autoEnabled = ref(false)
+const autoToggling = ref(false)
+const toggleAutoControl = async value => {
+  if (autoToggling.value) return
+  autoToggling.value = true
+  try {
+    const result = await (value ? enableAutoControl() : disableAutoControl())
+    if (!result.success) throw Error(result.error)
+    autoEnabled.value = result.enabled
+    ElMessage.success(result.message)
+  } catch (error) {
+    ElMessage.error(error.message || '切换失败')
+  } finally {
+    autoToggling.value = false
+  }
+}
+onMounted(async () => {
+  try {
+    const status = await getAutoControlStatus()
+    if (!status.error) autoEnabled.value = Boolean(status.enabled)
+  } catch (error) {
+    console.error('获取自动控制状态失败:', error)
+  }
+})
 </script>
 <style scoped>
 .control-page { display: flex; flex-direction: column; gap: 16px; }
@@ -95,6 +127,7 @@ h2 { margin: 0; font-size: 22px; }
 .twin-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; }
 .scene-wrap { min-width: 0; height: 640px; }
 .device-list { display: flex; flex-direction: column; gap: 8px; }
+.panel-header { display: flex; justify-content: space-between; align-items: center; }
 .device-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px;
   width: 100%; background: var(--el-bg-color); color: var(--el-text-color-primary);
   border: 1px solid var(--el-border-color-light); border-radius: 6px; font: inherit; text-align: left; }

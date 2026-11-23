@@ -5,7 +5,6 @@
         <div class="card-header">
           <span>自动控制规则</span>
           <div class="rule-actions">
-            <el-switch :model-value="enabled" :loading="toggling" :disabled="loading" active-text="自动控制" @change="toggleControl" />
             <el-button size="small" :disabled="loading" @click="openThresholds">阈值设置</el-button>
             <el-button type="primary" size="small" @click="refreshRules">刷新</el-button>
           </div>
@@ -96,25 +95,12 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getAutoControlRules, getAutoControlLogs } from '@/api/alerts'
-import { getAutoControlStatus, enableAutoControl, disableAutoControl, updateThresholds } from '@/api/auto-control'
+import { getAutoControlStatus, updateThresholds } from '@/api/auto-control'
 
-const enabled = ref(false)
-const toggling = ref(false)
 const thresholds = ref({})
 const thresholdDraft = ref({})
 const thresholdDialog = ref(false)
 const saving = ref(false)
-const toggleControl = async value => {
-  if (toggling.value) return
-  toggling.value = true
-  try {
-    const result = await (value ? enableAutoControl() : disableAutoControl())
-    if (!result.success) throw Error(result.error)
-    enabled.value = result.enabled
-    ElMessage.success(result.message)
-  } catch (error) { ElMessage.error(error.message || '切换失败') }
-  finally { toggling.value = false }
-}
 const openThresholds = () => {
   thresholdDraft.value = JSON.parse(JSON.stringify(thresholds.value))
   thresholdDialog.value = true
@@ -146,7 +132,6 @@ const refreshRules = async () => {
     const [response, status] = await Promise.all([getAutoControlRules(), getAutoControlStatus()])
     if (status.error) throw Error(status.error)
     rules.value = response
-    enabled.value = status.enabled
     thresholds.value = status.thresholds
   } catch (error) {
     console.error('获取自动控制规则失败:', error)
