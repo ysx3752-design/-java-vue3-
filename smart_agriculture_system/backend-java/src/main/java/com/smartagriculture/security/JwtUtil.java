@@ -1,88 +1,109 @@
 package com.smartagriculture.security;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartagriculture.config.AppEnv;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.JwtException;
+import io.jsonwebtoken.JwtBuilder;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
-import java.util.Base64;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 与 flask-jwt-extended 兼容的 HS256 JWT 签发与校验。
+ * JWT 签发与校验，基于 JJWT（io.jsonwebtoken）实现，HS256 对称签名。
+ *
+ * <p>令牌结构遵循 RFC 7519：subject 存放用户标识，自定义声明携带 user_id / username / role，
+ * 有效期由 {@link #EXPIRES_SECONDS} 决定。
  */
 @Component
 public class JwtUtil {
 
+    /** 令牌有效期（秒）。 */
     public static final long EXPIRES_SECONDS = 3600;
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private final byte[] secret;
+    private static final Logger log = LoggerFactory.getLogger(JwtUtil.class);
+
+    /** HS256 要求密钥长度不低于 256 位（32 字节）。 */
+    private static final int MIN_KEY_BYTES = 32;
+
+    private final SecretKey key;
 
     public JwtUtil() {
-        this.secret = AppEnv.jwtSecret().getBytes(StandardCharsets.UTF_8);
+        this.key = Keys.hmacShaKeyFor(normalizeSecret(AppEnv.jwtSecret()));
     }
 
-    public String createToken(String identity, Map<String, Object> extraClaims) {
-        long now = Instant.now().getEpochSecond();
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("iat", now);
-        payload.put("exp", now + EXPIRES_SECONDS);
-        payload.put("sub", identity);
-        if (extraClaims != null) {
-            payload.putAll(extraClaims);
+    /**
+     * HS256 的密钥必须至少 32 字节。配置过短时用 SHA-256 派生出 32 字节密钥，
+     * 避免应用因密钥强度不足直接启动失败；同时提示运维配置强密钥。
+     */
+    private static byte[] normalizeSecret(String raw) {
+        byte[] bytes = raw == null ? new byte[0] : raw.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length >= MIN_KEY_BYTES) {
+            return bytes;
         }
         try {
-            String header = base64Url(MAPPER.writeValueAsBytes(Map.of("typ", "JWT", "alg", "HS256")));
-            String body = base64Url(MAPPER.writeValueAsBytes(payload));
-            String signingInput = header + "." + body;
-            return signingInput + "." + base64Url(sign(signingInput));
+            byte[] derived = MessageDigest.getInstance("SHA-256").digest(bytes);
+            log.warn("JWT_SECRET 长度不足 {} 字节（当前 {} 字节），已用 SHA-256 派生密钥。"
+                    + "生产环境请配置至少 32 字节的随机密钥。", MIN_KEY_BYTES, bytes.length);
+            return derived;
         } catch (Exception e) {
-            throw new IllegalStateException("生成Token失败", e);
+            throw new IllegalStateException("无法派生 JWT 密钥", e);
         }
     }
 
+    /**
+     * 签发令牌。
+     *
+     * @param identity    主体标识（当前为用户 id 的字符串形式）
+     * @param extraClaims 附加声明，如 user_id、username、role
+     */
+    public String createToken(String identity, Map<String, Object> extraClaims) {
+        Instant now = Instant.now();
+        JwtBuilder builder = Jwts.builder()
+                .subject(identity)
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(now.plusSeconds(EXPIRES_SECONDS)));
+        if (extraClaims != null) {
+            extraClaims.forEach(builder::claim);
+        }
+        return builder.signWith(key, Jwts.SIG.HS256).compact();
+    }
+
+    /**
+     * 校验并解析令牌。
+     *
+     * @throws TokenException 签名无效、格式错误或已过期
+     */
     public TokenPayload parse(String token) throws TokenException {
         if (token == null || token.isBlank()) {
             throw new TokenException(false);
         }
-        String[] parts = token.split("\\.");
-        if (parts.length != 3) {
-            throw new TokenException(false);
-        }
-        String signingInput = parts[0] + "." + parts[1];
-        byte[] expected;
+        Claims claims;
         try {
-            expected = sign(signingInput);
-        } catch (Exception e) {
-            throw new TokenException(false);
-        }
-        byte[] actual = decodeBase64Url(parts[2]);
-        if (actual.length == 0 || !MessageDigest.isEqual(expected, actual)) {
-            throw new TokenException(false);
-        }
-        Map<String, Object> claims;
-        try {
-            claims = MAPPER.readValue(decodeBase64Url(parts[1]), new com.fasterxml.jackson.core.type.TypeReference<>() {
-            });
-        } catch (Exception e) {
-            throw new TokenException(false);
-        }
-        Object exp = claims.get("exp");
-        if (exp instanceof Number) {
-            if (((Number) exp).longValue() < Instant.now().getEpochSecond()) {
-                throw new TokenException(true);
-            }
-        } else {
+            claims = Jwts.parser()
+                    .verifyWith(key)
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload();
+        } catch (ExpiredJwtException e) {
+            throw new TokenException(true);
+        } catch (JwtException | IllegalArgumentException e) {
             throw new TokenException(false);
         }
 
         TokenPayload payload = new TokenPayload();
-        payload.claims = claims;
-        payload.identity = claims.get("sub") != null ? String.valueOf(claims.get("sub")) : null;
+        payload.claims = new LinkedHashMap<>(claims);
+        payload.identity = claims.getSubject();
         payload.userId = parseInteger(claims.get("user_id"));
         payload.username = claims.get("username") != null ? String.valueOf(claims.get("username")) : null;
         payload.role = claims.get("role") != null ? String.valueOf(claims.get("role")) : null;
@@ -93,8 +114,8 @@ public class JwtUtil {
     }
 
     private static Integer parseInteger(Object value) {
-        if (value instanceof Number) {
-            return ((Number) value).intValue();
+        if (value instanceof Number number) {
+            return number.intValue();
         }
         if (value instanceof String s) {
             try {
@@ -106,24 +127,7 @@ public class JwtUtil {
         return null;
     }
 
-    private byte[] sign(String signingInput) throws Exception {
-        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
-        mac.init(new javax.crypto.spec.SecretKeySpec(secret, "HmacSHA256"));
-        return mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static String base64Url(byte[] value) {
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(value);
-    }
-
-    private static byte[] decodeBase64Url(String value) {
-        try {
-            return Base64.getUrlDecoder().decode(value);
-        } catch (Exception e) {
-            return new byte[0];
-        }
-    }
-
+    /** 解析结果：主体、用户信息与原始声明。 */
     public static class TokenPayload {
         public String identity;
         public Integer userId;
@@ -132,6 +136,7 @@ public class JwtUtil {
         public Map<String, Object> claims;
     }
 
+    /** 令牌异常，区分「已过期」与「无效」两种原因，便于返回不同的提示。 */
     public static class TokenException extends RuntimeException {
         private final boolean expired;
 

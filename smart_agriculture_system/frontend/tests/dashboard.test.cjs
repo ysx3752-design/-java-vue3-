@@ -24,21 +24,25 @@ test('dashboard total is independent of five recent alerts',async()=>{
 test('a failed count endpoint does not discard other dashboard data',async()=>{
  const result=await(await api([],true)).getDashboardData();assert.equal(result.alertCount,null);assert.equal(result.alerts.length,5);assert.equal(result.sensorData.air_temperature,20)
 })
-test('sparse records populate only their own hour bin and zero readings are preserved',async()=>{
+test('sparse records keep their own hour bin and mock fill covers the rest',async()=>{
  const result=await(await api([{timestamp:new Date(now-60000).toISOString(),air_temperature:0,air_humidity:0}])).getTempHumidityTrend()
- // 24 个整点小时槽：只有 3 小时数据时也能画出几个点，而不是被 3 小时大槽并成一个孤点
+ // 24 个整点小时槽：真实值保留在自己的槽里，其余小时由演示假数据按昼夜曲线补齐
  assert.equal(result.times.length,24);assert.ok(result.times.every(t=>t.endsWith(':00')))
- const filled=result.temperatures.map((v,i)=>({v,i})).filter(x=>x.v!==null)
- assert.equal(filled.length,1);assert.equal(filled[0].v,0);assert.equal(filled[0].i,23)
- assert.equal(result.humidities[23],0)
+ assert.equal(result.temperatures[23],0);assert.equal(result.humidities[23],0)
+ assert.ok(result.temperatures.slice(0,23).every(v=>v!==null&&Number.isFinite(v)))
+ assert.ok(result.humidities.slice(0,23).every(v=>v!==null&&Number.isFinite(v)))
 })
-test('hourly bins average valid readings and never fabricate missing values',async()=>{
+test('hourly bins average valid readings, gaps are mock-filled and real anchors are bridged',async()=>{
  const result=await(await api([
  {timestamp:new Date(now-55*60000).toISOString(),air_temperature:20,air_humidity:null},
  {timestamp:new Date(now-50*60000).toISOString(),air_temperature:24},
  {timestamp:'invalid',air_temperature:100},
  {timestamp:new Date(now-30*3600000).toISOString(),air_temperature:100}
  ])).getTempHumidityTrend()
- assert.equal(result.temperatures[22],22);assert.equal(result.temperatures[23],null)
- assert.ok(result.humidities.every(v=>v===null));assert.ok(result.temperatures.slice(0,22).every(v=>v===null))
+ // 真实均值仍只算有效读数（invalid 与 30 小时前的记录不参与）
+ assert.equal(result.temperatures[22],22)
+ // 空档全部补齐，且与真实锚点平滑衔接：紧邻真实值的槽不会跳变
+ assert.ok(result.temperatures[23]!==null);assert.ok(Math.abs(result.temperatures[23]-22)<5)
+ assert.ok(result.temperatures.slice(0,22).every(v=>v!==null&&Number.isFinite(v)))
+ assert.ok(result.humidities.every(v=>v!==null&&Number.isFinite(v)&&v>=25&&v<=75))
 })

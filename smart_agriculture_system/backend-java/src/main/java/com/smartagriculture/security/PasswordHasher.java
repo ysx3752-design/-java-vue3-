@@ -1,92 +1,57 @@
 package com.smartagriculture.security;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.SecureRandom;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
 /**
- * 兼容 werkzeug 的 pbkdf2:sha256 密码哈希格式，保证旧数据库中的账号可直接登录。
+ * 密码哈希组件：统一使用 BCrypt。
+ *
+ * <p>BCrypt 自带随机盐与可调工作因子，同一明文每次编码结果都不同，
+ * 校验时由 {@link BCryptPasswordEncoder#matches} 从哈希串中还原盐与因子。
+ *
+ * <p>数据库中可能仍存在迁移前的旧格式哈希（PBKDF2 / 明文），
+ * 这类记录只做一次校验，登录成功后由 {@code AuthService} 重写为 BCrypt，
+ * 相关逻辑见 {@link LegacyPasswordMigration}。
  */
 public final class PasswordHasher {
 
-    private static final String CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    private static final SecureRandom RANDOM = new SecureRandom();
-    private static final int DEFAULT_ITERATIONS = 260_000;
+    private static final BCryptPasswordEncoder ENCODER = new BCryptPasswordEncoder();
 
     private PasswordHasher() {
     }
 
+    /** 生成 BCrypt 哈希（形如 $2a$10$...）。 */
     public static String hash(String password) {
-        String salt = randomSalt(16);
-        String digest = pbkdf2Hex(password, salt, DEFAULT_ITERATIONS);
-        return "pbkdf2:sha256:" + DEFAULT_ITERATIONS + "$" + salt + "$" + digest;
+        return ENCODER.encode(password);
+    }
+
+    /** 校验密码：BCrypt 走标准校验，其余格式交给迁移类处理。 */
+    public static boolean verify(String storedHash, String password) {
+        if (storedHash == null || password == null || storedHash.isEmpty()) {
+            return false;
+        }
+        if (isBcrypt(storedHash)) {
+            return ENCODER.matches(password, storedHash);
+        }
+        return LegacyPasswordMigration.matches(storedHash, password);
+    }
+
+    /** 判断哈希串是否为 BCrypt 格式。 */
+    public static boolean isBcrypt(String value) {
+        return value != null && value.matches("^\\$2[aby]\\$\\d{2}\\$.*");
+    }
+
+    /** 是否仍是迁移前的历史格式，需要在登录成功后重写为 BCrypt。 */
+    public static boolean needsUpgrade(String storedHash) {
+        return LegacyPasswordMigration.needsUpgrade(storedHash);
     }
 
     /**
-     * 校验密码：支持 pbkdf2:sha256 哈希、明文（历史数据）两种格式。
+     * 判断是否为已哈希格式（BCrypt 或迁移前的 PBKDF2）。
+     *
+     * <p>用于区分「已哈希」与「明文」：只有明文才需要在启动时重置，
+     * 历史 PBKDF2 哈希保持原样，交由登录流程升级。
      */
-    public static boolean verify(String storedHash, String password) {
-        if (storedHash == null || password == null) {
-            return false;
-        }
-        if (!storedHash.startsWith("pbkdf2:")) {
-            return storedHash.equals(password);
-        }
-        String[] parts = storedHash.split("\\$");
-        if (parts.length < 3) {
-            return false;
-        }
-        String method = parts[0];
-        String salt = parts[1];
-        String expected = parts[2];
-        if (!method.startsWith("pbkdf2:sha256")) {
-            return false;
-        }
-        int iterations = DEFAULT_ITERATIONS;
-        String[] methodParts = method.split(":");
-        if (methodParts.length >= 3) {
-            try {
-                iterations = Integer.parseInt(methodParts[2]);
-            } catch (NumberFormatException ignored) {
-                iterations = DEFAULT_ITERATIONS;
-            }
-        } else {
-            // 旧版 werkzeug 默认迭代次数
-            iterations = 150_000;
-        }
-        String actual = pbkdf2Hex(password, salt, iterations);
-        return MessageDigest.isEqual(
-                actual.getBytes(StandardCharsets.UTF_8),
-                expected.getBytes(StandardCharsets.UTF_8));
-    }
-
     public static boolean isHashed(String value) {
-        return value != null && value.startsWith("pbkdf2:sha256:");
-    }
-
-    private static String randomSalt(int length) {
-        StringBuilder sb = new StringBuilder(length);
-        for (int i = 0; i < length; i++) {
-            sb.append(CHARS.charAt(RANDOM.nextInt(CHARS.length())));
-        }
-        return sb.toString();
-    }
-
-    private static String pbkdf2Hex(String password, String salt, int iterations) {
-        try {
-            javax.crypto.SecretKeyFactory factory =
-                    javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-            javax.crypto.spec.PBEKeySpec spec =
-                    new javax.crypto.spec.PBEKeySpec(password.toCharArray(), salt.getBytes(StandardCharsets.UTF_8),
-                            iterations, 256);
-            byte[] bytes = factory.generateSecret(spec).getEncoded();
-            StringBuilder sb = new StringBuilder(bytes.length * 2);
-            for (byte b : bytes) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            throw new IllegalStateException("密码哈希计算失败", e);
-        }
+        return isBcrypt(value) || (value != null && value.startsWith("pbkdf2:"));
     }
 }

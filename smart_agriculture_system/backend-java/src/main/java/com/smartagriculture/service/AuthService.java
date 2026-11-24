@@ -36,7 +36,26 @@ public class AuthService {
             log.warn("用户密码错误: {}", username);
             return null;
         }
+        upgradePasswordHashIfNeeded(user, password);
         return user;
+    }
+
+    /**
+     * 历史格式的密码哈希在登录成功后立即重写为 BCrypt，用户无感知。
+     * 升级失败不影响本次登录结果。
+     */
+    private void upgradePasswordHashIfNeeded(User user, String password) {
+        if (!PasswordHasher.needsUpgrade(user.passwordHash)) {
+            return;
+        }
+        try {
+            String upgraded = PasswordHasher.hash(password);
+            userRepository.updatePasswordHash(user.id, upgraded);
+            user.passwordHash = upgraded;
+            log.info("用户 {} 的密码哈希已升级为 BCrypt", user.username);
+        } catch (Exception e) {
+            log.warn("用户 {} 的密码哈希升级失败，本次登录不受影响: {}", user.username, e.getMessage());
+        }
     }
 
     public User getUserById(String identity) {

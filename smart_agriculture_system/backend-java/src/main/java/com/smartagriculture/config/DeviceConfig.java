@@ -5,7 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 硬件与设备配置，与原 Python 后端 hardware_config.py 保持一致。
+ * 硬件与设备配置：网关地址与 8 路设备的继电器地址、端口映射。
  */
 public final class DeviceConfig {
 

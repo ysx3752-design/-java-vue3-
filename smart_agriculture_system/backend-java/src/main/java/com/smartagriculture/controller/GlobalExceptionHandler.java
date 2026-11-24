@@ -11,7 +11,7 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 import java.util.Map;
 
 /**
- * 全局异常处理，保持与原 Flask 后端一致的错误响应结构。
+ * 全局异常处理：把未捕获异常统一转换为 {"status":"error","message":"..."} 响应结构。
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {

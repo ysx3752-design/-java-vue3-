@@ -23,7 +23,10 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * WSN 虚拟平台 TCP 客户端，协议实现与原 Python 版本保持一致。
+ * WSN 虚拟平台 TCP 客户端：负责命令组帧、响应解析与继电器状态缓存。
+ *
+ * <p>通信协议为 9 字节定长帧：命令以 0xA5 起始、0x5A 结束，
+ * 响应以 0xB5 起始、0x5B 结束，一次响应可能包含多个子帧，解析时需扫描帧头帧尾。
  */
 public class WsnClient {
 

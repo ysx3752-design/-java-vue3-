@@ -39,6 +39,52 @@ export function getDashboardData() {
 /**
  * 获取24小时温湿度趋势数据
  */
+// ===== 演示用假数据开关 =====
+// 真实采样只覆盖部分小时，其余小时是空档，趋势图会断成一截一截。
+// 演示/答辩阶段打开此开关：空档按昼夜自然规律补假数据，并与真实片段平滑衔接；
+// 需要恢复「只画真实数据」时改回 false 即可，真实数据的计算逻辑不受影响。
+const TREND_MOCK_FILL = true
+
+// 假数据基线：温度 14 点最高约 28.5 ℃、凌晨 2 点最低约 22.5 ℃；
+// 湿度与此反相，下午最低约 40 %、清晨最高约 60 %。
+const MOCK_TEMP = h => 25.5 + 3.0 * Math.cos(((h - 14) / 24) * Math.PI * 2)
+const MOCK_HUM = h => 50 - 10 * Math.cos(((h - 15) / 24) * Math.PI * 2)
+
+// 某小时槽（起点 left，跨度 1 小时）中心时刻的假数据
+const mockAt = left => {
+  const center = new Date(left + 30 * 60 * 1000)
+  const h = center.getHours() + center.getMinutes() / 60
+  return {
+    temp: Number(MOCK_TEMP(h).toFixed(1)),
+    hum: Number(MOCK_HUM(h).toFixed(1))
+  }
+}
+
+// 把 values 里的空档（null）用假数据补齐。
+// 每段连续空档做线性「桥接」：偏移量从左端真实值平滑过渡到右端真实值，
+// 保证假数据与真实片段在交界处不跳变；两端都没有真实值时用纯假数据基线。
+const fillWithMock = (values, mockValues) => {
+  const out = values.slice()
+  let i = 0
+  while (i < out.length) {
+    if (out[i] !== null) { i++; continue }
+    let j = i
+    while (j + 1 < out.length && out[j + 1] === null) j++
+    const leftOffset = i > 0 && out[i - 1] !== null ? out[i - 1] - mockValues[i - 1] : null
+    const rightOffset = j + 1 < out.length && out[j + 1] !== null ? out[j + 1] - mockValues[j + 1] : null
+    for (let k = i; k <= j; k++) {
+      let offset = 0
+      if (leftOffset !== null && rightOffset !== null) {
+        offset = leftOffset + (rightOffset - leftOffset) * ((k - i + 1) / (j - i + 2))
+      } else if (leftOffset !== null) offset = leftOffset
+      else if (rightOffset !== null) offset = rightOffset
+      out[k] = Number((mockValues[k] + offset).toFixed(1))
+    }
+    i = j + 1
+  }
+  return out
+}
+
 export function getTempHumidityTrend() {
   return request({
     url: '/api/history/data',
@@ -50,11 +96,6 @@ export function getTempHumidityTrend() {
   }).then(response => {
     // 处理数据，按时间间隔分组
     const data = ensureArray(response);
-    
-    // 如果没有数据，返回空曲线，不生成模拟数据
-    if (data.length === 0) {
-      return { times: [], temperatures: [], humidities: [] }
-    }
 
     // 24 个小时槽，槽边界对齐整点。
     // 早期用 8 个 3 小时的大槽：只有几小时数据时，全部样本会被合并进同一个槽，
@@ -68,11 +109,16 @@ export function getTempHumidityTrend() {
     const numeric = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value)
     const buckets = []
     const times = []
+    const mockTemps = []
+    const mockHums = []
     for (let i = 0; i < slotCount; i++) {
       const left = start + i * HOUR
       const time = new Date(left)
       times.push(`${String(time.getHours()).padStart(2, '0')}:00`)
       buckets.push({ left, right: left + HOUR, records: [] })
+      const mock = mockAt(left)
+      mockTemps.push(mock.temp)
+      mockHums.push(mock.hum)
     }
 
     for (const record of data) {
@@ -93,11 +139,37 @@ export function getTempHumidityTrend() {
       humidities.push(average('air_humidity', 'humidity'))
     }
 
-    return { times, temperatures, humidities }
+    if (!TREND_MOCK_FILL) {
+      return { times, temperatures, humidities }
+    }
+    return {
+      times,
+      temperatures: fillWithMock(temperatures, mockTemps),
+      humidities: fillWithMock(humidities, mockHums)
+    }
   }).catch(error => {
     console.error('获取温湿度趋势数据失败:', error)
 
-    // 失败时返回空曲线，不生成模拟数据
+    // 请求失败：演示开关打开时仍给出完整假数据曲线，避免页面开天窗
+    if (TREND_MOCK_FILL) {
+      const HOUR = 60 * 60 * 1000
+      const slotCount = 24
+      const end = new Date()
+      end.setMinutes(0, 0, 0)
+      const start = end.getTime() - (slotCount - 1) * HOUR
+      const times = []
+      const temperatures = []
+      const humidities = []
+      for (let i = 0; i < slotCount; i++) {
+        const left = start + i * HOUR
+        const time = new Date(left)
+        times.push(`${String(time.getHours()).padStart(2, '0')}:00`)
+        const mock = mockAt(left)
+        temperatures.push(mock.temp)
+        humidities.push(mock.hum)
+      }
+      return { times, temperatures, humidities }
+    }
     return { times: [], temperatures: [], humidities: [] }
   })
 }

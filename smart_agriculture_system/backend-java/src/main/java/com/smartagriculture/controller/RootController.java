@@ -11,20 +11,23 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 兼容旧版根路径接口（/sensor-data、/device/status 等）。
+ * 传感器数据的读取与导出接口。
+ *
+ * <p>{@code /api/sensor-data} 供前端轮询：优先返回实时快照，网关离线时回退数据库最新记录；
+ * {@code /api/export/sensor-data} 按时间区间导出 CSV。
+ *
+ * <p>返回给前端前统一经过 {@link SensorSimulator} 处理（仅在出口叠加波动），
+ * 本控制器不写库，落库由后台定时采样完成。
  */
 @RestController
 public class RootController {
@@ -37,56 +40,6 @@ public class RootController {
     public RootController(DeviceManager deviceManager, SensorDataRepository sensorDataRepository) {
         this.deviceManager = deviceManager;
         this.sensorDataRepository = sensorDataRepository;
-    }
-
-    @GetMapping("/sensor-data")
-    public ResponseEntity<Map<String, Object>> sensorData() {
-        try {
-            SensorData latest = sensorDataRepository.findLatest();
-            if (latest != null) {
-                Map<String, Object> row = latest.toMap();
-                SensorSimulator.applyRow(row, latest.timestamp);
-                return ResponseEntity.ok(row);
-            }
-            if (!deviceManager.getWsnClient().isConnected()) {
-                deviceManager.requestConnectAsync();
-            }
-            Map<String, Double> sensorData = deviceManager.getSensorData();
-            if (sensorData == null || sensorData.isEmpty()) {
-                return ResponseEntity.status(404).body(Maps.of("error", "没有可用的传感器数据"));
-            }
-            LocalDateTime now = LocalDateTime.now();
-            SensorData record = SensorData.of(sensorData, now);
-            sensorDataRepository.insert(record);
-            Map<String, Object> row = record.toMap();
-            SensorSimulator.applyRow(row, now);
-            return ResponseEntity.ok(row);
-        } catch (Exception e) {
-            log.error("获取传感器数据失败: {}", e.getMessage());
-            return ResponseEntity.status(500).body(Maps.of("error", e.getMessage()));
-        }
-    }
-
-    @GetMapping("/device/status")
-    public ResponseEntity<?> deviceStatus() {
-        try {
-            List<Map<String, Object>> result = new ArrayList<>();
-            deviceManager.getDeviceStatus().forEach((type, value) -> result.add(Maps.of(
-                    "type", type,
-                    "name", value.getOrDefault("name", type),
-                    "description", value.getOrDefault("description", ""),
-                    "status", value.getOrDefault("status", 0)
-            )));
-            return ResponseEntity.ok(result);
-        } catch (Exception e) {
-            log.error("获取设备状态失败: {}", e.getMessage());
-            return ResponseEntity.status(500).body(Maps.of("error", e.getMessage()));
-        }
-    }
-
-    @PostMapping("/device/connect")
-    public ResponseEntity<Map<String, Object>> connect() {
-        return ResponseEntity.ok(Maps.of("message", "设备连接成功", "status", "connected"));
     }
 
     @GetMapping("/api/sensor-data")
