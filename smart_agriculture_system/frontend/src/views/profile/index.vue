@@ -27,7 +27,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/store/user'
 import { getUserProfile } from '@/api/user'
@@ -35,8 +35,8 @@ import adminAvatar from '@/assets/avatar-admin.svg'
 
 const userStore = useUserStore()
 
-// 管理员统一使用线条人形头像，与顶栏保持一致
-const avatarSrc = computed(() => (userStore.userRole === 'admin' ? adminAvatar : userStore.avatar))
+// 所有角色统一使用线条人形头像（黑白），与顶栏保持一致
+const avatarSrc = adminAvatar
 const loading = ref(false)
 const profile = ref({})
 

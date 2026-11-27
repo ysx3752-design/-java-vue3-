@@ -221,10 +221,10 @@ const userStore = useUserStore()
 
 // 监测类型选项
 const monitorTypes = [
-  { label: '温度', value: 'temperature' },
-  { label: '湿度', value: 'humidity' },
-  { label: '土壤湿度', value: 'soil_moisture' },
+  { label: '空气温度', value: 'temperature' },
+  { label: '空气湿度', value: 'humidity' },
   { label: '土壤温度', value: 'soil_temperature' },
+  { label: '土壤湿度', value: 'soil_moisture' },
   { label: '光照强度', value: 'light_intensity' },
   { label: 'CO2浓度', value: 'co2_level' }
 ]

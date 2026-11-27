@@ -96,12 +96,14 @@ export function bucketSeries(rows, options = {}) {
 export function generateDemoSeries(options = {}) {
   const points = options.points || 24
   const end = options.end ? new Date(options.end) : new Date()
-  const span = 24 * 3600 * 1000
+  // 支持自定义区间：不传 start 时沿用"最近 24 小时"
+  const start = options.start ? new Date(options.start) : new Date(end.getTime() - 24 * 3600 * 1000)
+  const span = Math.max(1, end.getTime() - start.getTime())
   const bucketSize = span / points
 
   const series = []
   for (let i = 0; i < points; i++) {
-    const time = new Date(end.getTime() - (points - i - 1) * bucketSize)
+    const time = new Date(start.getTime() + i * bucketSize)
     const hour = time.getHours() + time.getMinutes() / 60
     const wave = Math.cos(((hour - 14) / 24) * Math.PI * 2)
     const daylight = hour < 6 || hour > 18 ? 0 : Math.sin((Math.PI * (hour - 6)) / 12)

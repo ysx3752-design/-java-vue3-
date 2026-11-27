@@ -104,6 +104,7 @@ const loadHistory = async () => {
   loading.value = true
   try {
     const end = new Date()
+    controller = new AbortController()
     const result = await getHistoryRange({ start_date: new Date(end.getTime() - hours.value * 3600000).toISOString(), end_date: end.toISOString(), metric: metricKey.value }, { signal: controller.signal })
     if (id !== requestId) return
     const records = Array.isArray(result) ? result : result?.data

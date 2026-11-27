@@ -52,7 +52,9 @@
           </el-icon>
           <Breadcrumb />
         </div>
-        <div class="header-right">
+        <!-- 退出登录时整块随登录态消失：否则 userRole 清空后 avatarSrc 会退化成
+             el-avatar 的默认图标，在路由跳转完成前闪一下蓝底人形 -->
+        <div class="header-right" v-if="userStore.isLoggedIn">
           <el-dropdown trigger="click">
             <span class="user-info">
               <el-avatar :size="32" :src="avatarSrc" class="user-avatar" />
@@ -83,12 +85,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeMount } from 'vue'
+import { ref, onMounted, onBeforeMount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import Breadcrumb from '@/components/Breadcrumb.vue'
 import { useUserStore } from '@/store/user'
-import { getAvatarUrl } from '@/utils/common'
 import adminAvatar from '@/assets/avatar-admin.svg'
 import gsap from 'gsap'
 
@@ -96,8 +97,8 @@ const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 
-// 管理员统一使用线条人形头像；普通用户仍显示各自头像
-const avatarSrc = computed(() => (userStore.userRole === 'admin' ? adminAvatar : userStore.avatar))
+// 所有角色统一使用线条人形头像（黑白），不再按 role 区分
+const avatarSrc = adminAvatar
 
 // 获取需要的图标组件
 const {

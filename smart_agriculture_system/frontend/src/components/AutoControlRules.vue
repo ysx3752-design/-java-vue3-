@@ -158,8 +158,8 @@ const refreshLogs = async () => {
 // 获取传感器类型名称
 const getSensorTypeName = (type) => {
   const typeNames = {
-    'temperature': '温度',
-    'humidity': '湿度',
+    'temperature': '空气温度',
+    'humidity': '空气湿度',
     'soil_moisture': '土壤湿度',
     'soil_temperature': '土壤温度',
     'light': '光照强度',

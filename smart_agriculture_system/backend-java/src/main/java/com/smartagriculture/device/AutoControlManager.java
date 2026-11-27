@@ -18,6 +18,17 @@ public class AutoControlManager {
     private final DeviceManager deviceManager;
     private final com.smartagriculture.repository.OperationLogRepository logs;
 
+    /** 写日志时用的中文名，避免出现 soil_moisture=15.0 这种英文键。 */
+    private static final Map<String, String> SENSOR_LABELS = Map.of(
+            "temperature", "空气温度", "humidity", "空气湿度",
+            "soil_temperature", "土壤温度", "soil_moisture", "土壤湿度",
+            "light", "光照强度", "co2", "CO₂浓度");
+
+    private static final Map<String, String> DEVICE_LABELS = Map.of(
+            "water_curtain", "水帘", "internal_fan", "内通风", "external_fan", "外通风",
+            "light", "灯光", "spray", "喷灌", "skylight", "天窗",
+            "external_shade", "外遮阳", "internal_shade", "内遮阳");
+
     private final Map<String, double[]> thresholds = new LinkedHashMap<>();
     private final Map<String, String> deviceMapping = new LinkedHashMap<>();
 
@@ -30,11 +41,16 @@ public class AutoControlManager {
 
         thresholds.put("temperature", new double[]{15, 30});
         thresholds.put("humidity", new double[]{40, 80});
+        thresholds.put("soil_temperature", new double[]{12, 28});
+        thresholds.put("soil_moisture", new double[]{20, 60});
         thresholds.put("light", new double[]{5000, 20000});
         thresholds.put("co2", new double[]{400, 1000});
 
         deviceMapping.put("temperature", "water_curtain");
         deviceMapping.put("humidity", "internal_fan");
+        // 土壤没有独立的地暖/灌溉控制器，分别借补光灯（增温）与喷灌执行
+        deviceMapping.put("soil_temperature", "light");
+        deviceMapping.put("soil_moisture", "spray");
         deviceMapping.put("light", "light");
         deviceMapping.put("co2", "external_fan");
     }
@@ -128,8 +144,11 @@ public class AutoControlManager {
     public synchronized Map<String, java.util.List<Map<String, Object>>> getControlRules() {
         Map<String, java.util.List<Map<String, Object>>> result = new LinkedHashMap<>();
         thresholds.forEach((sensor, range) -> {
-            String lowAction = "light".equals(sensor) ? "open" : "close";
-            String highAction = "light".equals(sensor) ? "close" : "open";
+            // 这三类属于「低值要开设备」：光照不足补光、土温偏低补光增温、土壤偏干灌溉
+            boolean lowOpens = "light".equals(sensor) || "soil_temperature".equals(sensor)
+                    || "soil_moisture".equals(sensor);
+            String lowAction = lowOpens ? "open" : "close";
+            String highAction = lowOpens ? "close" : "open";
             result.put(sensor, java.util.List.of(
                     Map.of("threshold_operator", "<", "threshold_value", range[0], "device_type", deviceMapping.get(sensor), "action", lowAction),
                     Map.of("threshold_operator", ">", "threshold_value", range[1], "device_type", deviceMapping.get(sensor), "action", highAction)));
@@ -139,7 +158,9 @@ public class AutoControlManager {
 
     private synchronized void checkThresholds(Map<String, Double> sensorData) {
         if (!running) return;
-        Map<String, String> keys = Map.of("temperature", "air_temperature", "humidity", "air_humidity",
+        Map<String, String> keys = Map.of(
+                "temperature", "air_temperature", "humidity", "air_humidity",
+                "soil_temperature", "soil_temperature", "soil_moisture", "soil_moisture",
                 "light", "light_intensity", "co2", "co2_concentration");
         getControlRules().forEach((sensor, rules) -> {
             Double value = sensorData.get(keys.get(sensor));
@@ -160,7 +181,9 @@ public class AutoControlManager {
                 entry.device_type = type;
                 entry.operation_time = java.time.LocalDateTime.now();
                 entry.operation_result = success;
-                entry.description = sensor + "=" + value + "，执行 " + type + " " + action;
+                entry.description = SENSOR_LABELS.getOrDefault(sensor, sensor) + " " + value + "，"
+                        + ("open".equals(action) ? "开启" : "关闭")
+                        + DEVICE_LABELS.getOrDefault(type, type);
                 try { logs.insert(entry); }
                 catch (Exception e) { log.error("记录自动控制日志失败: {}", e.getMessage()); }
             }

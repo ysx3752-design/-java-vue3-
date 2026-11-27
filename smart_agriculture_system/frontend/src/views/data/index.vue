@@ -6,9 +6,6 @@
           <div class="title-section">
             <span class="title">数据分析</span>
             <span class="subtitle">显示最近24小时的数据，按小时聚合</span>
-            <el-tag v-if="isDemoData" type="warning" size="small" effect="plain" class="demo-tag">
-              演示数据
-            </el-tag>
           </div>
           
           <!-- 添加右侧刷新按钮 -->
